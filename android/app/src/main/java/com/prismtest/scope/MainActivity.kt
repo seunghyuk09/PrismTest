@@ -137,6 +137,14 @@ private fun Scope(controller: CameraController) {
         PreviewView(context).apply { scaleType = PreviewView.ScaleType.FIT_CENTER }
     }
 
+    // 어느 빌드로 측정했는지 추적할 수 있어야 한다. 화면에도 보이고 CSV 에도 남는다.
+    val appVersion = remember {
+        runCatching {
+            context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "?"
+        }.getOrDefault("?")
+    }
+    val appVersionRef = rememberUpdatedState(appVersion)
+
     LaunchedEffect(Unit) {
         controller.bind(
             lifecycleOwner, previewView, settings,
@@ -154,7 +162,8 @@ private fun Scope(controller: CameraController) {
                         val file = Store.saveFrame(context, image, "cap")
                         val row = buildCsvRow(
                             note, lightMode, a, b, controller.applied, settings,
-                            roiARef.value, roiBRef.value, image.width, image.height, file ?: ""
+                            roiARef.value, roiBRef.value, image.width, image.height, file ?: "",
+                            appVersionRef.value
                         )
                         Store.appendCsv(context, row)
                         saveMsg = if (file != null) "저장됨 · $file" else "저장 실패"
@@ -377,6 +386,8 @@ private fun Scope(controller: CameraController) {
 
                 Text("이미지 Pictures/PrismScope · 로그 Documents/PrismScope",
                     fontSize = 11.sp, color = Color(0xFF6B767C))
+                Text("앱 버전 $appVersion",
+                    fontSize = 11.sp, color = Color(0xFF6B767C), fontFamily = FontFamily.Monospace)
             }
         }
     }
@@ -502,7 +513,7 @@ private fun fitRect(box: Size, fw: Int, fh: Int): FloatArray? {
 private fun buildCsvRow(
     note: String, lightMode: String, a: RoiStats, b: RoiStats,
     cam: AppliedCamera, s: ManualSettings, ra: Roi, rb: Roi,
-    w: Int, h: Int, file: String,
+    w: Int, h: Int, file: String, appVersion: String,
 ): String {
     fun q(v: String) = "\"" + v.replace("\"", "\"\"") + "\""
     val c = Stats.contrast(a, b)
@@ -519,6 +530,6 @@ private fun buildCsvRow(
         s.iso, s.exposureNs, "%.3f".format(s.focusDiopter), if (s.locked) 1 else 0,
         "%.4f".format(ra.cx), "%.4f".format(ra.cy), "%.4f".format(ra.size),
         "%.4f".format(rb.cx), "%.4f".format(rb.cy), "%.4f".format(rb.size),
-        w, h, q(file)
+        w, h, q(file), q(appVersion)
     ).joinToString(",")
 }

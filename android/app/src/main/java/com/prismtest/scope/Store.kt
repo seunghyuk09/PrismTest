@@ -34,7 +34,7 @@ object Store {
         "aeMode", "afMode", "awbMode", "noiseReduction", "edgeMode",
         "iso_set", "exposureNs_set", "focusDiopter_set", "locked",
         "roiA_cx", "roiA_cy", "roiA_size", "roiB_cx", "roiB_cy", "roiB_size",
-        "frameW", "frameH", "imageFile",
+        "frameW", "frameH", "imageFile", "appVersion",
     ).joinToString(",")
 
     /** Y 평면을 그레이스케일 PNG 로 저장하고 파일명을 돌려준다. */

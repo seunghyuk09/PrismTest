@@ -186,15 +186,30 @@ jobs:
             echo
             echo "같은 서명 키를 쓰므로 기존 앱 위에 덮어쓰기 설치됩니다. 지울 필요 없습니다."
             echo
+            echo "## 자동 업데이트"
+            echo
+            echo "**Obtainium** 을 쓰면 새 빌드가 나올 때마다 폰이 알려주고 한 번 눌러 업데이트할 수 있습니다."
+            echo "이 앱 자체는 네트워크 권한이 없으므로, 업데이트 확인은 Obtainium 이 대신합니다."
+            echo
+            echo "1. Obtainium 설치 — https://github.com/ImranR98/Obtainium/releases/latest"
+            echo "2. Obtainium → **+** → App Source URL 에 아래 주소 입력 → **Add**"
+            echo "   \`https://github.com/seunghyuk09/PrismTest\`"
+            echo "3. 새 빌드가 올라오면 Obtainium 이 알림을 띄웁니다"
+            echo
+            echo "자세한 내용과 Play 내부 테스트 방식은 \`docs/auto-update.md\` 참조."
+            echo
             echo "## .aab 파일은 무엇인가"
             echo
             echo "\`.aab\` 는 **Google Play Console 업로드 전용**입니다. 폰에 직접 설치할 수 없습니다."
             echo "Play 내부 테스트로 배포하면 자동 차단·Play Protect 경고 없이 설치되고 업데이트도 자동으로 내려갑니다."
             echo "절차는 저장소의 \`docs/play-release.md\` 를 보십시오."
           } > notes.md
-          gh release delete apk-latest --yes --cleanup-tag || true
-          gh release create apk-latest \
-            --prerelease \
-            --title "PrismScope APK (build $BUILD)" \
+          # 버전별 태그로 릴리스한다. 고정 태그(apk-latest)로 덮어쓰면
+          # Obtainium 같은 업데이터가 버전이 올라간 것을 인식하지 못한다.
+          gh release create "v$BUILD" \
+            --latest \
+            --title "PrismScope v0.1.$BUILD" \
             --notes-file notes.md \
             out/*.apk out/*.aab
+          # 이전 방식의 고정 태그가 남아 있으면 혼동되므로 정리한다.
+          gh release delete apk-latest --yes --cleanup-tag 2>/dev/null || true
