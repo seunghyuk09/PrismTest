@@ -4,6 +4,11 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+// 릴리스 키스토어는 저장소에 두지 않는다. CI 가 GitHub Secrets 에서 복원해
+// 아래 환경변수로 넘긴다. 없으면 디버그 키로 서명하며, 그 사실을 릴리스 노트에 명시한다.
+val releaseStorePath: String? = System.getenv("RELEASE_KEYSTORE_PATH")
+    ?.takeIf { it.isNotBlank() && File(it).exists() }
+
 android {
     namespace = "com.prismtest.scope"
     compileSdk = 35
@@ -12,18 +17,27 @@ android {
         applicationId = "com.prismtest.scope"
         minSdk = 29
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1"
+        versionCode = (System.getenv("BUILD_NUMBER") ?: "1").toInt()
+        versionName = "0.1.${System.getenv("BUILD_NUMBER") ?: "0"}"
     }
 
-    // 고정 디버그 키로 서명한다. CI가 매번 새 키를 만들면 서명이 달라져
-    // 기존 앱 위에 업데이트 설치가 되지 않는다. (사내 테스트 전용, 배포용 아님)
     signingConfigs {
         getByName("debug") {
             storeFile = file("debug.keystore")
             storePassword = "android"
             keyAlias = "androiddebugkey"
             keyPassword = "android"
+        }
+        if (releaseStorePath != null) {
+            create("release") {
+                storeFile = File(releaseStorePath)
+                storePassword = System.getenv("RELEASE_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("RELEASE_KEY_ALIAS")
+                keyPassword = System.getenv("RELEASE_KEY_PASSWORD")
+                enableV1Signing = true
+                enableV2Signing = true
+                enableV3Signing = true
+            }
         }
     }
 
@@ -32,8 +46,15 @@ android {
             signingConfig = signingConfigs.getByName("debug")
         }
         release {
+            // debuggable=false 가 이 빌드의 핵심이다. 디버그 빌드는 다른 앱이
+            // 프로세스에 붙어 메모리를 읽을 수 있고, Play Protect 도 그래서 막는다.
+            isDebuggable = false
+            // 축소·난독화는 아직 켜지 않는다. 실기 검증 전에 R8 이 무언가를 지우면
+            // 원인 추적이 어려워진다. 앱이 폰에서 검증된 뒤 켠다.
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig =
+                if (releaseStorePath != null) signingConfigs.getByName("release")
+                else signingConfigs.getByName("debug")
         }
     }
 
@@ -44,6 +65,13 @@ android {
     kotlinOptions { jvmTarget = "17" }
     buildFeatures { compose = true }
     packaging { resources.excludes += "/META-INF/{AL2.0,LGPL2.1}" }
+
+    dependenciesInfo {
+        // APK 에 의존성 메타데이터 블록을 넣지 않는다(암호화된 불투명 블록이라
+        // 제3자가 내용을 검증할 수 없다). 검증 가능성을 위해 뺀다.
+        includeInApk = false
+        includeInBundle = false
+    }
 }
 
 dependencies {

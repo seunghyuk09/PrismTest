@@ -9,6 +9,8 @@ on:
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
 
 jobs:
   build:
@@ -25,15 +27,93 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
-      - name: Build debug APK
-        working-directory: android
-        run: ./gradlew --no-daemon --stacktrace assembleDebug
+      # 릴리스 키스토어는 저장소에 없다. Secrets 에 있으면 복원해서 쓰고,
+      # 없으면 디버그 키로 서명한 뒤 그 사실을 릴리스 노트에 표시한다.
+      - name: Restore release keystore
+        id: keystore
+        env:
+          KS: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KS" ]; then
+            echo "$KS" | base64 -d > "$RUNNER_TEMP/release.jks"
+            echo "path=$RUNNER_TEMP/release.jks" >> "$GITHUB_OUTPUT"
+            echo "signed_with=릴리스 키 (GitHub Secrets)" >> "$GITHUB_OUTPUT"
+          else
+            echo "path=" >> "$GITHUB_OUTPUT"
+            echo "signed_with=디버그 키 (RELEASE_KEYSTORE_BASE64 시크릿 미설정)" >> "$GITHUB_OUTPUT"
+          fi
 
-      - name: Rename APK
+      - name: Build release APK
+        working-directory: android
+        env:
+          BUILD_NUMBER: ${{ github.run_number }}
+          RELEASE_KEYSTORE_PATH: ${{ steps.keystore.outputs.path }}
+          RELEASE_KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
+          RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+        run: ./gradlew --no-daemon --stacktrace assembleRelease
+
+      - name: Collect APK
         run: |
           mkdir -p out
-          cp android/app/build/outputs/apk/debug/app-debug.apk \
+          cp android/app/build/outputs/apk/release/app-release.apk \
              "out/PrismScope-b${{ github.run_number }}.apk"
+
+      # 주장이 아니라 검증. 빌드된 APK 를 직접 뜯어서 확인하고,
+      # 하나라도 어긋나면 빌드를 실패시켜 배포되지 않게 한다.
+      - name: Verify APK safety properties
+        id: verify
+        run: |
+          set -euo pipefail
+          APK=$(ls out/*.apk)
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          AAPT="$BT/aapt2"
+          APKSIGNER="$BT/apksigner"
+
+          echo "::group::선언된 권한"
+          PERMS=$("$AAPT" dump permissions "$APK")
+          echo "$PERMS"
+          echo "::endgroup::"
+
+          fail=0
+          for p in INTERNET ACCESS_NETWORK_STATE ACCESS_FINE_LOCATION ACCESS_COARSE_LOCATION \
+                   READ_PHONE_STATE RECORD_AUDIO READ_CONTACTS READ_SMS; do
+            if echo "$PERMS" | grep -q "android.permission.$p\b"; then
+              echo "::error::금지된 권한이 APK 에 포함됨: $p"
+              fail=1
+            fi
+          done
+
+          echo "::group::badging"
+          BADGING=$("$AAPT" dump badging "$APK")
+          echo "$BADGING" | head -30
+          echo "::endgroup::"
+
+          if echo "$BADGING" | grep -q "application-debuggable"; then
+            echo "::error::debuggable 플래그가 켜져 있음"
+            fail=1
+          fi
+
+          echo "::group::서명 검증"
+          "$APKSIGNER" verify --verbose --print-certs "$APK" | tee signer.txt
+          echo "::endgroup::"
+
+          SHA=$(sha256sum "$APK" | cut -d' ' -f1)
+          CERT=$(grep -m1 -i "SHA-256 digest:" signer.txt | awk '{print $NF}' || echo "unknown")
+          echo "apk_sha256=$SHA" >> "$GITHUB_OUTPUT"
+          echo "cert_sha256=$CERT" >> "$GITHUB_OUTPUT"
+
+          if [ "$fail" -ne 0 ]; then
+            echo "안전성 검사 실패 — 배포하지 않는다"
+            exit 1
+          fi
+          echo "안전성 검사 통과"
+
+      # 이 APK 가 이 저장소의 이 커밋에서 이 워크플로로 빌드됐음을 서명으로 증명한다.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: out/*.apk
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -41,8 +121,6 @@ jobs:
           name: PrismScope-apk
           path: out/*.apk
 
-      # 폰에서 바로 받을 수 있도록 고정 태그의 프리릴리스로 올린다.
-      # 아티팩트는 zip 이라 폰에서 풀기 번거롭다.
       - name: Publish to apk-latest release
         if: github.ref_name == 'claude/transparent-prism-surface-inspection-1s9537' || github.ref_name == 'main'
         env:
@@ -50,16 +128,50 @@ jobs:
           BRANCH: ${{ github.ref_name }}
           SHA: ${{ github.sha }}
           BUILD: ${{ github.run_number }}
+          APK_SHA: ${{ steps.verify.outputs.apk_sha256 }}
+          CERT_SHA: ${{ steps.verify.outputs.cert_sha256 }}
+          SIGNED_WITH: ${{ steps.keystore.outputs.signed_with }}
         run: |
           {
-            echo "브랜치 \`$BRANCH\` / 커밋 \`$SHA\` 에서 자동 빌드 (build $BUILD)."
+            echo "빌드 $BUILD · 브랜치 \`$BRANCH\` · 커밋 \`$SHA\`"
             echo
-            echo "폰에서 아래 .apk 파일을 눌러 설치하십시오."
-            echo "같은 서명 키를 쓰므로 기존 앱 위에 덮어쓰기 설치됩니다."
+            echo "## 이 APK 의 안전성"
+            echo
+            echo "빌드할 때마다 CI 가 아래를 **APK 를 직접 뜯어서** 확인하고, 하나라도 어긋나면 배포하지 않습니다."
+            echo
+            echo "- **네트워크 권한 없음** — INTERNET 권한이 없어 어떤 서버와도 통신할 수 없습니다. 촬영한 검사 이미지가 밖으로 나갈 경로가 존재하지 않습니다."
+            echo "- **위치·마이크·연락처·전화 권한 없음** — 요구하는 권한은 카메라 하나뿐입니다."
+            echo "- **debuggable 아님** — 릴리스 빌드라 다른 앱이 프로세스 메모리를 들여다볼 수 없습니다."
+            echo "- **백업 비활성화** — 검사 이미지가 클라우드로 백업되지 않습니다."
+            echo "- **빌드 출처 증명(attestation)** 첨부 — 이 저장소의 위 커밋에서 빌드됐음이 서명으로 증명됩니다."
+            echo "- **전체 소스 공개** — \`android/\` 아래에 이 APK 를 만든 코드 전부가 있습니다."
+            echo
+            echo "서명 키: $SIGNED_WITH"
+            echo
+            echo "| 항목 | 값 |"
+            echo "|---|---|"
+            echo "| APK SHA-256 | \`$APK_SHA\` |"
+            echo "| 서명 인증서 SHA-256 | \`$CERT_SHA\` |"
+            echo
+            echo "다운로드한 파일이 위 SHA-256 과 같은지 확인하면 전송 중 변조되지 않았음을 알 수 있습니다."
+            echo "서명 인증서 값은 매 업데이트마다 같아야 합니다. 달라지면 다른 사람이 만든 APK입니다."
+            echo
+            echo "## 설치 방법 (갤럭시 Z 폴드 7)"
+            echo
+            echo "1. **설정 → 보안 및 개인정보 보호 → 자동 차단(Auto Blocker) → 끄기**"
+            echo "   삼성 자동 차단이 켜져 있으면 스토어 외 앱 설치가 전면 차단됩니다. 이것 때문에 설치가 안 됩니다."
+            echo "2. 아래 \`.apk\` 파일을 눌러 다운로드"
+            echo "3. \"이 출처의 앱 설치 허용\"이 뜨면 사용 중인 브라우저를 허용"
+            echo "4. Play Protect 경고가 뜨면 **자세히 → 무시하고 설치**"
+            echo "   (스토어에 등록되지 않은 앱이라 뜨는 경고이며, 악성 코드가 발견됐다는 뜻이 아닙니다)"
+            echo "5. 설치 후 **자동 차단을 다시 켜셔도 됩니다.** 이미 설치된 앱은 유지됩니다."
+            echo "   단 다음 업데이트 때 다시 잠시 꺼야 합니다."
+            echo
+            echo "같은 서명 키를 쓰므로 기존 앱 위에 덮어쓰기 설치됩니다. 지울 필요 없습니다."
           } > notes.md
           gh release delete apk-latest --yes --cleanup-tag || true
           gh release create apk-latest \
             --prerelease \
-            --title "PrismScope 최신 APK (build $BUILD)" \
+            --title "PrismScope APK (build $BUILD)" \
             --notes-file notes.md \
             out/*.apk

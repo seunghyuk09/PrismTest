@@ -1,12 +1,32 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
+    <!-- 이 앱이 요구하는 권한은 카메라 하나뿐이다. -->
     <uses-permission android:name="android.permission.CAMERA" />
+
+    <!--
+      네트워크 권한을 명시적으로 제거한다.
+      의존 라이브러리가 INTERNET 을 병합하더라도 최종 APK 에서 빠진다.
+      권한이 없으면 앱은 어떤 서버와도 통신할 수 없다 — 촬영한 검사 이미지가
+      외부로 나갈 경로가 물리적으로 존재하지 않는다는 뜻이다.
+      CI 가 빌드된 APK 를 검사해 이 권한이 있으면 빌드를 실패시킨다.
+    -->
+    <uses-permission android:name="android.permission.INTERNET" tools:node="remove" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" tools:node="remove" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" tools:node="remove" />
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" tools:node="remove" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" tools:node="remove" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" tools:node="remove" />
+
     <uses-feature android:name="android.hardware.camera.any" android:required="true" />
 
     <application
         android:allowBackup="false"
+        android:hasFragileUserData="false"
+        android:usesCleartextTraffic="false"
         android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
         android:label="@string/app_name"
         android:supportsRtl="true"
         android:theme="@style/Theme.PrismScope">
