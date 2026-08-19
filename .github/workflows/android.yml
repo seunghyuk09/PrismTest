@@ -1,0 +1,58 @@
+name: Build APK
+
+on:
+  push:
+    paths:
+      - 'android/**'
+      - '.github/workflows/android.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Build debug APK
+        working-directory: android
+        run: ./gradlew --no-daemon --stacktrace assembleDebug
+
+      - name: Rename APK
+        run: |
+          mkdir -p out
+          cp android/app/build/outputs/apk/debug/app-debug.apk \
+             "out/PrismScope-b${{ github.run_number }}.apk"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PrismScope-apk
+          path: out/*.apk
+
+      # 폰에서 바로 받을 수 있도록 고정 태그의 프리릴리스로 올린다.
+      # 아티팩트는 zip 이라 폰에서 풀기 번거롭다.
+      - name: Publish to apk-latest release
+        if: github.ref_name == 'claude/transparent-prism-surface-inspection-1s9537' || github.ref_name == 'main'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete apk-latest --yes --cleanup-tag || true
+          gh release create apk-latest \
+            --prerelease \
+            --title "PrismScope 최신 APK (build ${{ github.run_number }})" \
+            --notes "브랜치 \`${{ github.ref_name }}\` / 커밋 \`${{ github.sha }}\` 에서 자동 빌드.
+
+폰에서 아래 .apk 파일을 눌러 설치하십시오. 같은 서명 키를 쓰므로 기존 앱 위에 덮어쓰기 설치됩니다." \
+            out/*.apk

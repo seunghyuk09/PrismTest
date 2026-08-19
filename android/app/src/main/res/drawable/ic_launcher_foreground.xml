@@ -1,0 +1,9 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <!-- 프리즘 삼각형 -->
+    <path android:fillColor="#FFC107"
+        android:pathData="M54,32 L74,74 L34,74 Z" />
+    <path android:fillColor="#0E1113"
+        android:pathData="M54,40 L67,70 L41,70 Z" />
+</vector>
