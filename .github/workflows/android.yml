@@ -47,12 +47,19 @@ jobs:
         if: github.ref_name == 'claude/transparent-prism-surface-inspection-1s9537' || github.ref_name == 'main'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+          BUILD: ${{ github.run_number }}
         run: |
+          {
+            echo "브랜치 \`$BRANCH\` / 커밋 \`$SHA\` 에서 자동 빌드 (build $BUILD)."
+            echo
+            echo "폰에서 아래 .apk 파일을 눌러 설치하십시오."
+            echo "같은 서명 키를 쓰므로 기존 앱 위에 덮어쓰기 설치됩니다."
+          } > notes.md
           gh release delete apk-latest --yes --cleanup-tag || true
           gh release create apk-latest \
             --prerelease \
-            --title "PrismScope 최신 APK (build ${{ github.run_number }})" \
-            --notes "브랜치 \`${{ github.ref_name }}\` / 커밋 \`${{ github.sha }}\` 에서 자동 빌드.
-
-폰에서 아래 .apk 파일을 눌러 설치하십시오. 같은 서명 키를 쓰므로 기존 앱 위에 덮어쓰기 설치됩니다." \
+            --title "PrismScope 최신 APK (build $BUILD)" \
+            --notes-file notes.md \
             out/*.apk
