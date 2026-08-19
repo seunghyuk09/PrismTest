@@ -6,6 +6,8 @@ import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.CaptureResult
 import android.hardware.camera2.TotalCaptureResult
+import android.hardware.camera2.params.ColorSpaceTransform
+import android.hardware.camera2.params.RggbChannelVector
 import android.util.Range
 import androidx.camera.camera2.interop.Camera2CameraControl
 import androidx.camera.camera2.interop.Camera2CameraInfo
@@ -70,9 +72,14 @@ data class CameraCaps(
 
 /** 수동 고정 설정값. */
 data class ManualSettings(
-    val locked: Boolean = true,
-    val iso: Int = 50,
-    val exposureNs: Long = 8_000_000L,
+    /**
+     * 기본값은 자동이다. 잠긴 상태로 시작하면 조명이 갖춰지지 않은 곳에서
+     * 새까만 화면만 보이고, 그게 앱이 고장난 것처럼 보인다.
+     * 화면이 잘 보이는 상태에서 [CameraController.currentAsManual] 로 잠근다.
+     */
+    val locked: Boolean = false,
+    val iso: Int = 100,
+    val exposureNs: Long = 16_000_000L,
     val focusDiopter: Float = 4.0f,
 )
 
@@ -96,6 +103,11 @@ class CameraController(
 
     @Volatile var caps: CameraCaps = CameraCaps(); private set
     @Volatile var applied: AppliedCamera = AppliedCamera(); private set
+
+    // 자동 상태에서 ISP 가 쓰던 색 보정값. 수동으로 잠글 때 이 값을 그대로 넘겨야
+    // 색이 유지된다. 이걸 안 넘기고 AWB 만 끄면 센서 원본이 나와 초록빛이 돈다.
+    @Volatile private var lastGains: RggbChannelVector? = null
+    @Volatile private var lastTransform: ColorSpaceTransform? = null
 
     fun bind(
         lifecycleOwner: LifecycleOwner,
@@ -135,6 +147,8 @@ class CameraController(
                         noiseReduction = result.get(CaptureResult.NOISE_REDUCTION_MODE),
                         edgeMode = result.get(CaptureResult.EDGE_MODE),
                     )
+                    result.get(CaptureResult.COLOR_CORRECTION_GAINS)?.let { lastGains = it }
+                    result.get(CaptureResult.COLOR_CORRECTION_TRANSFORM)?.let { lastTransform = it }
                 }
             })
 
@@ -167,7 +181,7 @@ class CameraController(
             b.setCaptureRequestOption(CaptureRequest.SENSOR_EXPOSURE_TIME, s.exposureNs)
             b.setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
             b.setCaptureRequestOption(CaptureRequest.LENS_FOCUS_DISTANCE, s.focusDiopter)
-            b.setCaptureRequestOption(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_OFF)
+            applyWhiteBalance(b)
             b.setCaptureRequestOption(CaptureRequest.NOISE_REDUCTION_MODE, CaptureRequest.NOISE_REDUCTION_MODE_OFF)
             b.setCaptureRequestOption(CaptureRequest.EDGE_MODE, CaptureRequest.EDGE_MODE_OFF)
             b.setCaptureRequestOption(
@@ -187,6 +201,44 @@ class CameraController(
         Camera2CameraControl.from(cam.cameraControl).captureRequestOptions = b.build()
     }
 
+    /**
+     * 화이트밸런스를 고정한다.
+     *
+     * AWB 를 끄기만 하면 색 보정이 통째로 빠져 센서 원본(초록 우세)이 그대로 나온다.
+     * 자동 상태에서 ISP 가 쓰던 gains/transform 을 그대로 넘겨야 색이 유지된다.
+     * 값을 아직 못 읽었으면 AWB 자동 + 잠금으로 대체한다.
+     */
+    private fun applyWhiteBalance(b: CaptureRequestOptions.Builder) {
+        val g = lastGains
+        val t = lastTransform
+        if (g != null && t != null) {
+            b.setCaptureRequestOption(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_OFF)
+            b.setCaptureRequestOption(
+                CaptureRequest.COLOR_CORRECTION_MODE,
+                CaptureRequest.COLOR_CORRECTION_MODE_TRANSFORM_MATRIX
+            )
+            b.setCaptureRequestOption(CaptureRequest.COLOR_CORRECTION_GAINS, g)
+            b.setCaptureRequestOption(CaptureRequest.COLOR_CORRECTION_TRANSFORM, t)
+        } else {
+            b.setCaptureRequestOption(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_AUTO)
+            b.setCaptureRequestOption(CaptureRequest.CONTROL_AWB_LOCK, true)
+        }
+    }
+
+    /**
+     * 지금 카메라가 쓰고 있는 값을 그대로 수동 설정으로 바꾼다.
+     * 자동으로 잘 보이는 상태를 만든 뒤 이걸로 잠그는 것이 올바른 순서다.
+     */
+    fun currentAsManual(base: ManualSettings): ManualSettings {
+        val a = applied
+        return base.copy(
+            locked = true,
+            iso = a.iso ?: base.iso,
+            exposureNs = a.exposureNs ?: base.exposureNs,
+            focusDiopter = a.focusDiopter ?: base.focusDiopter,
+        )
+    }
+
     private fun applyManual(ext: Camera2Interop.Extender<Preview>, s: ManualSettings) {
         if (!s.locked) return
         ext.setCaptureRequestOption(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
@@ -194,7 +246,6 @@ class CameraController(
         ext.setCaptureRequestOption(CaptureRequest.SENSOR_EXPOSURE_TIME, s.exposureNs)
         ext.setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
         ext.setCaptureRequestOption(CaptureRequest.LENS_FOCUS_DISTANCE, s.focusDiopter)
-        ext.setCaptureRequestOption(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_OFF)
         ext.setCaptureRequestOption(CaptureRequest.NOISE_REDUCTION_MODE, CaptureRequest.NOISE_REDUCTION_MODE_OFF)
         ext.setCaptureRequestOption(CaptureRequest.EDGE_MODE, CaptureRequest.EDGE_MODE_OFF)
     }

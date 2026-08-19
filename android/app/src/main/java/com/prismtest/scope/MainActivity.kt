@@ -298,6 +298,46 @@ private fun Scope(controller: CameraController) {
                 Text("⚠ 너무 밝아 하얗게 뭉개진 부분이 있습니다. 각도를 조정하세요",
                     fontSize = 12.sp, color = WARN)
             }
+            if (statsA.mean < 5 && statsB.mean < 5) {
+                Text("⚠ 화면이 너무 어둡습니다. 조명을 켜거나 아래 「자동」으로 되돌리세요",
+                    fontSize = 12.sp, color = WARN)
+            }
+
+            // 촬영 조건 고정은 검사의 대전제라 설정 안이 아니라 메인에 둔다.
+            // 다만 처음부터 잠그면 어두운 화면만 보이므로, 자동으로 맞춘 뒤 잠그는 순서로 간다.
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        if (settings.locked) "촬영 조건 고정됨" else "자동 노출 (측정 전에 고정하세요)",
+                        fontSize = 13.sp, fontWeight = FontWeight.Bold,
+                        color = if (settings.locked) OK else WARN
+                    )
+                    Text(
+                        "ISO ${applied.iso ?: "-"} · " +
+                            (applied.exposureNs?.let { "%.1f ms".format(it / 1e6) } ?: "-") + " · " +
+                            (applied.focusDiopter?.let {
+                                if (it > 0f) "%.0f mm".format(1000f / it) else "무한대"
+                            } ?: "-"),
+                        fontSize = 11.sp, color = DIM, fontFamily = FontFamily.Monospace
+                    )
+                }
+                if (settings.locked) {
+                    OutlinedButton(onClick = {
+                        settings = settings.copy(locked = false)
+                        controller.updateManual(settings)
+                    }, modifier = Modifier.height(44.dp)) { Text("자동", fontSize = 13.sp) }
+                } else {
+                    Button(onClick = {
+                        settings = controller.currentAsManual(settings)
+                        controller.updateManual(settings)
+                    }, modifier = Modifier.height(44.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = OK, contentColor = Color.Black)
+                    ) { Text("현재 상태로 고정", fontSize = 13.sp, fontWeight = FontWeight.Bold) }
+                }
+            }
 
             // ---- 박스 조작 ----
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -346,12 +386,8 @@ private fun Scope(controller: CameraController) {
 
                 HorizontalDivider(color = Color(0xFF2A3136))
 
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("카메라 수동 고정", Modifier.weight(1f), fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                    Switch(settings.locked, {
-                        settings = settings.copy(locked = it); controller.updateManual(settings)
-                    })
-                }
+                Text("수동 조정 — 고정 상태에서만 반영됩니다",
+                    fontWeight = FontWeight.Bold, fontSize = 14.sp)
 
                 val isoLo = caps.isoRange?.lower ?: 50
                 val isoHi = caps.isoRange?.upper ?: 800
