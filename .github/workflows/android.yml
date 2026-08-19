@@ -51,13 +51,16 @@ jobs:
           RELEASE_KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
           RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
           RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
-        run: ./gradlew --no-daemon --stacktrace assembleRelease
+        run: ./gradlew --no-daemon --stacktrace assembleRelease bundleRelease
 
-      - name: Collect APK
+      - name: Collect APK and AAB
         run: |
           mkdir -p out
           cp android/app/build/outputs/apk/release/app-release.apk \
              "out/PrismScope-b${{ github.run_number }}.apk"
+          # AAB 는 Play Console 업로드용이다. 사이드로드에는 쓸 수 없다.
+          cp android/app/build/outputs/bundle/release/app-release.aab \
+             "out/PrismScope-b${{ github.run_number }}.aab"
 
       # 주장이 아니라 검증. 빌드된 APK 를 직접 뜯어서 확인하고,
       # 하나라도 어긋나면 빌드를 실패시켜 배포되지 않게 한다.
@@ -113,13 +116,15 @@ jobs:
       - name: Attest build provenance
         uses: actions/attest-build-provenance@v2
         with:
-          subject-path: out/*.apk
+          subject-path: out/*
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: PrismScope-apk
-          path: out/*.apk
+          path: |
+            out/*.apk
+            out/*.aab
 
       - name: Publish to apk-latest release
         if: github.ref_name == 'claude/transparent-prism-surface-inspection-1s9537' || github.ref_name == 'main'
@@ -164,14 +169,32 @@ jobs:
             echo "3. \"이 출처의 앱 설치 허용\"이 뜨면 사용 중인 브라우저를 허용"
             echo "4. Play Protect 경고가 뜨면 **자세히 → 무시하고 설치**"
             echo "   (스토어에 등록되지 않은 앱이라 뜨는 경고이며, 악성 코드가 발견됐다는 뜻이 아닙니다)"
-            echo "5. 설치 후 **자동 차단을 다시 켜셔도 됩니다.** 이미 설치된 앱은 유지됩니다."
+            echo "5. **\"무시하고 설치\" 선택지 없이 그냥 막히면** — Play 스토어 → 우측 상단 프로필 →"
+            echo "   Play 프로텍트 → 우측 상단 톱니 → **\"기기 유해 앱 검사\" 끄기** → 설치 → 다시 켜기"
+            echo "6. 설치 후 **자동 차단을 다시 켜셔도 됩니다.** 이미 설치된 앱은 유지됩니다."
             echo "   단 다음 업데이트 때 다시 잠시 꺼야 합니다."
             echo
+            echo "### 그래도 안 되면 — PC 에서 ADB 설치 (가장 확실함)"
+            echo
+            echo "폰: 설정 → 휴대전화 정보 → 소프트웨어 정보 → 빌드번호 7회 탭 → 개발자 옵션 → **USB 디버깅 켜기**"
+            echo
+            echo "\`\`\`"
+            echo "adb install -r PrismScope-b$BUILD.apk"
+            echo "\`\`\`"
+            echo
+            echo "ADB 설치는 Play Protect 의 설치 차단을 거치지 않습니다. 검사 폰에는 이 방법이 가장 안정적입니다."
+            echo
             echo "같은 서명 키를 쓰므로 기존 앱 위에 덮어쓰기 설치됩니다. 지울 필요 없습니다."
+            echo
+            echo "## .aab 파일은 무엇인가"
+            echo
+            echo "\`.aab\` 는 **Google Play Console 업로드 전용**입니다. 폰에 직접 설치할 수 없습니다."
+            echo "Play 내부 테스트로 배포하면 자동 차단·Play Protect 경고 없이 설치되고 업데이트도 자동으로 내려갑니다."
+            echo "절차는 저장소의 \`docs/play-release.md\` 를 보십시오."
           } > notes.md
           gh release delete apk-latest --yes --cleanup-tag || true
           gh release create apk-latest \
             --prerelease \
             --title "PrismScope APK (build $BUILD)" \
             --notes-file notes.md \
-            out/*.apk
+            out/*.apk out/*.aab
