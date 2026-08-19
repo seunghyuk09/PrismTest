@@ -26,14 +26,12 @@ object Store {
     private val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US)
 
     val csvHeader = listOf(
-        "timestamp", "note", "lightMode",
-        "roiA_mean", "roiA_min", "roiA_max", "roiA_sd", "roiA_sat", "roiA_focus",
-        "roiB_mean", "roiB_min", "roiB_max", "roiB_sd", "roiB_sat", "roiB_focus",
-        "contrast_dIoverI", "bgPass",
-        "iso_applied", "exposureNs_applied", "focusDiopter_applied",
-        "aeMode", "afMode", "awbMode", "noiseReduction", "edgeMode",
-        "iso_set", "exposureNs_set", "focusDiopter_set", "locked",
-        "roiA_cx", "roiA_cy", "roiA_size", "roiB_cx", "roiB_cy", "roiB_size",
+        "timestamp", "note", "verdict",
+        "stainIndex", "median", "p99", "max", "mean",
+        "brightArea", "satRatio", "focus",
+        "baseline_n", "baseline_mean", "baseline_sd", "passLimit", "failLimit",
+        "iso", "exposureNs", "focusDiopter", "locked",
+        "roi_cx", "roi_cy", "roi_size",
         "frameW", "frameH", "imageFile", "appVersion",
     ).joinToString(",")
 

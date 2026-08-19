@@ -14,6 +14,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
@@ -39,22 +40,13 @@ import androidx.core.content.ContextCompat
 import java.util.concurrent.Executors
 import kotlin.math.roundToInt
 
-/** 측정 모드. v0 은 판정하지 않는다 — 재는 것까지가 역할이다. */
-enum class Mode(val label: String) {
-    CONTRAST("결함 대비"),
-    BACKGROUND("배경 어둠"),
-}
-
-/** 배경 합격 기준. 8bit 평균 8 이하 = 포화값의 약 3%. */
-const val BG_PASS_LEVEL = 8.0
-
-private val OK = Color(0xFF5FD37A)
-private val WARN = Color(0xFFF2C14E)
-private val BAD = Color(0xFFEF6A5E)
-private val A_COLOR = Color(0xFFFFC107)
-private val B_COLOR = Color(0xFF4FC3F7)
-private val PANEL = Color(0xFF15191C)
-private val CARD = Color(0xFF1B2126)
+private val OK = Color(0xFF3DBE63)
+private val WARN = Color(0xFFE8A93B)
+private val BAD = Color(0xFFE04B3F)
+private val IDLE = Color(0xFF7C8A91)
+private val FRAME = Color(0xFFFFC107)
+private val PANEL = Color(0xFF14181B)
+private val CARD = Color(0xFF1C2227)
 private val DIM = Color(0xFF8B979D)
 
 class MainActivity : ComponentActivity() {
@@ -88,14 +80,11 @@ private fun Root(controller: CameraController) {
     val launcher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted = it }
-
     LaunchedEffect(Unit) { if (!granted) launcher.launch(Manifest.permission.CAMERA) }
 
     Surface(Modifier.fillMaxSize(), color = Color(0xFF0E1113)) {
-        // 시스템 바 아래로 내용이 깔리지 않게 한다. targetSdk 35 는 기본이 edge-to-edge 라
-        // 이 패딩이 없으면 상단이 상태바에, 하단이 내비게이션 바에 가린다.
         Box(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
-            if (granted) Scope(controller)
+            if (granted) Inspect(controller)
             else Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Text("카메라 권한을 허용해 주세요", color = Color.White)
             }
@@ -103,47 +92,38 @@ private fun Root(controller: CameraController) {
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun Scope(controller: CameraController) {
+private fun Inspect(controller: CameraController) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
 
-    var mode by remember { mutableStateOf(Mode.CONTRAST) }
     var settings by remember { mutableStateOf(ManualSettings()) }
     var caps by remember { mutableStateOf(CameraCaps()) }
     var applied by remember { mutableStateOf(AppliedCamera()) }
 
-    var roiA by remember { mutableStateOf(Roi(0.38f, 0.45f, 0.16f)) }
-    var roiB by remember { mutableStateOf(Roi(0.68f, 0.45f, 0.16f)) }
-    var editingA by remember { mutableStateOf(true) }
-
-    var statsA by remember { mutableStateOf(RoiStats.EMPTY) }
-    var statsB by remember { mutableStateOf(RoiStats.EMPTY) }
+    var roi by remember { mutableStateOf(Roi(0.5f, 0.5f, 0.30f)) }
+    var stats by remember { mutableStateOf(RoiStats.EMPTY) }
     var frameW by remember { mutableIntStateOf(0) }
     var frameH by remember { mutableIntStateOf(0) }
 
+    var baseline by remember { mutableStateOf(Baseline.load(context)) }
     var note by remember { mutableStateOf("") }
-    var lightMode by remember { mutableStateOf("darkfield") }
-    var saveMsg by remember { mutableStateOf("") }
+    var msg by remember { mutableStateOf("") }
     var pendingSave by remember { mutableStateOf(false) }
+    var pendingRegister by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
-    var showHelp by remember { mutableStateOf(true) }
+    var showHelp by remember { mutableStateOf(false) }
 
-    val roiARef = rememberUpdatedState(roiA)
-    val roiBRef = rememberUpdatedState(roiB)
-
-    val previewView = remember {
-        PreviewView(context).apply { scaleType = PreviewView.ScaleType.FIT_CENTER }
-    }
-
-    // 어느 빌드로 측정했는지 추적할 수 있어야 한다. 화면에도 보이고 CSV 에도 남는다.
+    val roiRef = rememberUpdatedState(roi)
     val appVersion = remember {
         runCatching {
             context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "?"
         }.getOrDefault("?")
     }
-    val appVersionRef = rememberUpdatedState(appVersion)
+
+    val previewView = remember {
+        PreviewView(context).apply { scaleType = PreviewView.ScaleType.FIT_CENTER }
+    }
 
     LaunchedEffect(Unit) {
         controller.bind(
@@ -152,21 +132,26 @@ private fun Scope(controller: CameraController) {
                 try {
                     frameW = image.width
                     frameH = image.height
-                    val a = Stats.analyze(image, roiARef.value)
-                    val b = Stats.analyze(image, roiBRef.value)
-                    statsA = a
-                    statsB = b
+                    val s = Stats.analyze(image, roiRef.value)
+                    stats = s
                     applied = controller.applied
+                    if (pendingRegister) {
+                        pendingRegister = false
+                        val b = baseline.plus(s.stainIndex)
+                        baseline = b
+                        Baseline.save(context, b)
+                        msg = "양품 ${b.n}개 등록됨" +
+                            if (b.ready) "" else " (${Baseline.MIN_SAMPLES}개 이상 필요)"
+                    }
                     if (pendingSave) {
                         pendingSave = false
                         val file = Store.saveFrame(context, image, "cap")
-                        val row = buildCsvRow(
-                            note, lightMode, a, b, controller.applied, settings,
-                            roiARef.value, roiBRef.value, image.width, image.height, file ?: "",
-                            appVersionRef.value
+                        Store.appendCsv(
+                            context,
+                            buildCsvRow(note, s, baseline, controller.applied, settings,
+                                roiRef.value, image.width, image.height, file ?: "", appVersion)
                         )
-                        Store.appendCsv(context, row)
-                        saveMsg = if (file != null) "저장됨 · $file" else "저장 실패"
+                        msg = if (file != null) "저장됨" else "저장 실패"
                     }
                 } finally {
                     image.close()
@@ -176,24 +161,21 @@ private fun Scope(controller: CameraController) {
         )
     }
 
-    val paintA = remember {
+    val labelPaint = remember {
         android.graphics.Paint().apply {
             color = android.graphics.Color.parseColor("#FFC107")
-            textSize = 40f; isFakeBoldText = true; isAntiAlias = true
+            textSize = 38f; isFakeBoldText = true; isAntiAlias = true
         }
     }
-    val paintB = remember {
-        android.graphics.Paint().apply {
-            color = android.graphics.Color.parseColor("#4FC3F7")
-            textSize = 40f; isFakeBoldText = true; isAntiAlias = true
-        }
-    }
+
+    val verdict = baseline.judge(stats.stainIndex)
+    val tooDark = stats.median < 3 && stats.p99 < 6
+    val blurry = stats.focus < 1.0 && !tooDark
+    val glare = stats.satRatio > 0.01
 
     Column(Modifier.fillMaxSize()) {
 
-        // ================= 카메라 프리뷰 =================
-        // weight(1f) 로 남는 공간을 전부 받는다. 아래 패널은 높이가 제한돼 있어야
-        // 한다 — 무제한 스크롤 컬럼을 두면 이 영역이 0 으로 짓눌린다.
+        // ─────────── 카메라 ───────────
         var boxSize by remember { mutableStateOf(Size.Zero) }
         Box(
             Modifier
@@ -201,60 +183,29 @@ private fun Scope(controller: CameraController) {
                 .weight(1f)
                 .background(Color.Black)
                 .onSizeChanged { boxSize = Size(it.width.toFloat(), it.height.toFloat()) }
-                .pointerInput(editingA, frameW, frameH) {
+                .pointerInput(frameW, frameH) {
                     detectTapGestures { off ->
                         val rect = fitRect(boxSize, frameW, frameH) ?: return@detectTapGestures
-                        val nx = ((off.x - rect[0]) / rect[2]).coerceIn(0f, 1f)
-                        val ny = ((off.y - rect[1]) / rect[3]).coerceIn(0f, 1f)
-                        if (editingA) roiA = roiA.copy(cx = nx, cy = ny)
-                        else roiB = roiB.copy(cx = nx, cy = ny)
+                        roi = roi.copy(
+                            cx = ((off.x - rect[0]) / rect[2]).coerceIn(0f, 1f),
+                            cy = ((off.y - rect[1]) / rect[3]).coerceIn(0f, 1f)
+                        )
                     }
                 }
         ) {
             AndroidView(factory = { previewView }, modifier = Modifier.fillMaxSize())
             Canvas(Modifier.fillMaxSize()) {
                 val rect = fitRect(size, frameW, frameH) ?: return@Canvas
-                fun draw(r: Roi, c: Color, active: Boolean, label: String, p: android.graphics.Paint) {
-                    val s = r.size * minOf(rect[2], rect[3])
-                    val left = rect[0] + r.cx * rect[2] - s / 2
-                    val top = rect[1] + r.cy * rect[3] - s / 2
-                    drawRect(c, Offset(left, top), Size(s, s), style = Stroke(if (active) 6f else 3f))
-                    drawContext.canvas.nativeCanvas.drawText(label, left + 6f, top - 12f, p)
-                }
-                if (mode == Mode.CONTRAST) {
-                    draw(roiB, B_COLOR, !editingA, "B  정상부", paintB)
-                    draw(roiA, A_COLOR, editingA, "A  결함", paintA)
-                } else {
-                    // 배경 검증은 박스 하나로 충분하다
-                    draw(roiA, A_COLOR, true, "배경 측정", paintA)
-                }
+                val side = roi.size * minOf(rect[2], rect[3])
+                val left = rect[0] + roi.cx * rect[2] - side / 2
+                val top = rect[1] + roi.cy * rect[3] - side / 2
+                drawRect(FRAME, Offset(left, top), Size(side, side), style = Stroke(6f))
+                drawContext.canvas.nativeCanvas.drawText("검사 영역", left + 6f, top - 14f, labelPaint)
             }
-
-            if (showHelp) {
-                Box(Modifier.align(Alignment.TopCenter).padding(10.dp)) {
-                    Row(
-                        Modifier
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(Color(0xE0000000))
-                            .padding(horizontal = 12.dp, vertical = 9.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            if (mode == Mode.CONTRAST)
-                                "노란 A 박스를 결함 위에, 파란 B 박스를 같은 프리즘의 깨끗한 면 위에 놓으세요.\n" +
-                                    "아래 버튼으로 박스를 고르고 화면을 누르면 이동합니다."
-                            else
-                                "프리즘을 치우고, 노란 박스를 배경(광트랩 개구부) 위에 놓으세요.\n" +
-                                    "배경이 얼마나 어두운지만 잽니다.",
-                            fontSize = 12.sp, color = Color.White, modifier = Modifier.weight(1f)
-                        )
-                        TextButton(onClick = { showHelp = false }) { Text("닫기", fontSize = 12.sp) }
-                    }
-                }
-            }
+            if (showHelp) HelpOverlay { showHelp = false }
         }
 
-        // ================= 결과 패널 (높이 고정) =================
+        // ─────────── 판정 ───────────
         Column(
             Modifier
                 .fillMaxWidth()
@@ -262,146 +213,129 @@ private fun Scope(controller: CameraController) {
                 .padding(horizontal = 14.dp, vertical = 10.dp),
             verticalArrangement = Arrangement.spacedBy(9.dp)
         ) {
-            SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-                Mode.entries.forEachIndexed { i, m ->
-                    SegmentedButton(
-                        selected = mode == m,
-                        onClick = { mode = m; if (m == Mode.BACKGROUND) editingA = true },
-                        shape = SegmentedButtonDefaults.itemShape(i, Mode.entries.size)
-                    ) { Text(m.label, fontSize = 14.sp) }
-                }
-            }
+            VerdictCard(verdict, stats.stainIndex, baseline)
 
-            when (mode) {
-                Mode.CONTRAST -> {
-                    val c = Stats.contrast(statsA, statsB) * 100
-                    Result(
-                        big = "%.1f%%".format(c),
-                        meaning = "결함부(A)가 정상부(B)보다 이만큼 밝습니다",
-                        advice = when {
-                            c >= 15 -> "좋습니다. 이 조명 조건을 기록해 두세요"
-                            c >= 5 -> "보이긴 합니다. 조명 각도를 더 낮춰 15%를 노려보세요"
-                            c >= 0 -> "너무 약합니다. 배경을 더 어둡게, 조명은 더 비스듬히"
-                            else -> "A 가 B 보다 어둡습니다. 박스 위치를 확인하세요"
-                        },
-                        color = when {
-                            c >= 15 -> OK
-                            c >= 5 -> WARN
-                            else -> BAD
-                        }
-                    )
-                }
-                Mode.BACKGROUND -> {
-                    val v = statsA.mean
-                    Result(
-                        big = "%.1f".format(v),
-                        meaning = "배경 박스의 밝기입니다 (0 = 완전한 검정, 255 = 흰색)",
-                        advice = if (v <= BG_PASS_LEVEL) "합격입니다. 배경이 충분히 어둡습니다"
-                        else "기준은 8 이하입니다. 차광판을 세우고 배경을 더 멀리 두세요",
-                        color = if (v <= BG_PASS_LEVEL) OK else BAD
-                    )
-                }
+            val warning = when {
+                tooDark -> "화면이 너무 어둡습니다. 조명을 켜세요"
+                glare -> "너무 밝아 하얗게 뭉개집니다. 각도를 조정하세요"
+                blurry -> "초점이 흐립니다. 거리를 조정하세요"
+                else -> null
             }
+            if (warning != null) Text("⚠ $warning", fontSize = 12.sp, color = WARN)
 
-            if (statsA.satRatio > 0.005 || statsB.satRatio > 0.005) {
-                Text("⚠ 너무 밝아 하얗게 뭉개진 부분이 있습니다. 각도를 조정하세요",
-                    fontSize = 12.sp, color = WARN)
-            }
-            if (statsA.mean < 5 && statsB.mean < 5) {
-                Text("⚠ 화면이 너무 어둡습니다. 조명을 켜거나 아래 「자동」으로 되돌리세요",
-                    fontSize = 12.sp, color = WARN)
-            }
-
-            // 촬영 조건 고정은 검사의 대전제라 설정 안이 아니라 메인에 둔다.
-            // 다만 처음부터 잠그면 어두운 화면만 보이므로, 자동으로 맞춘 뒤 잠그는 순서로 간다.
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 Column(Modifier.weight(1f)) {
                     Text(
-                        if (settings.locked) "촬영 조건 고정됨" else "자동 노출 (측정 전에 고정하세요)",
-                        fontSize = 13.sp, fontWeight = FontWeight.Bold,
+                        if (settings.locked) "촬영 조건 고정됨" else "자동 노출 — 측정 전에 고정하세요",
+                        fontSize = 12.sp, fontWeight = FontWeight.Bold,
                         color = if (settings.locked) OK else WARN
                     )
                     Text(
                         "ISO ${applied.iso ?: "-"} · " +
-                            (applied.exposureNs?.let { "%.1f ms".format(it / 1e6) } ?: "-") + " · " +
-                            (applied.focusDiopter?.let {
-                                if (it > 0f) "%.0f mm".format(1000f / it) else "무한대"
-                            } ?: "-"),
+                            (applied.exposureNs?.let { "%.1f ms".format(it / 1e6) } ?: "-"),
                         fontSize = 11.sp, color = DIM, fontFamily = FontFamily.Monospace
                     )
                 }
                 if (settings.locked) {
-                    OutlinedButton(onClick = {
-                        settings = settings.copy(locked = false)
-                        controller.updateManual(settings)
-                    }, modifier = Modifier.height(44.dp)) { Text("자동", fontSize = 13.sp) }
+                    OutlinedButton(
+                        onClick = { settings = settings.copy(locked = false); controller.updateManual(settings) },
+                        modifier = Modifier.height(42.dp)
+                    ) { Text("자동", fontSize = 13.sp) }
                 } else {
-                    Button(onClick = {
-                        settings = controller.currentAsManual(settings)
-                        controller.updateManual(settings)
-                    }, modifier = Modifier.height(44.dp),
+                    Button(
+                        onClick = { settings = controller.currentAsManual(settings); controller.updateManual(settings) },
+                        modifier = Modifier.height(42.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = OK, contentColor = Color.Black)
                     ) { Text("현재 상태로 고정", fontSize = 13.sp, fontWeight = FontWeight.Bold) }
                 }
             }
 
-            // ---- 박스 조작 ----
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (mode == Mode.CONTRAST) {
-                    Btn("A 옮기기", editingA, A_COLOR, Modifier.weight(1f)) { editingA = true }
-                    Btn("B 옮기기", !editingA, B_COLOR, Modifier.weight(1f)) { editingA = false }
-                } else {
-                    Btn("배경 박스 이동", true, A_COLOR, Modifier.weight(1f)) { editingA = true }
-                }
-                Btn("작게", false, DIM) {
-                    if (editingA) roiA = roiA.copy(size = (roiA.size - 0.03f).coerceAtLeast(0.04f))
-                    else roiB = roiB.copy(size = (roiB.size - 0.03f).coerceAtLeast(0.04f))
-                }
-                Btn("크게", false, DIM) {
-                    if (editingA) roiA = roiA.copy(size = (roiA.size + 0.03f).coerceAtMost(0.5f))
-                    else roiB = roiB.copy(size = (roiB.size + 0.03f).coerceAtMost(0.5f))
-                }
+                OutlinedButton(
+                    onClick = { roi = roi.copy(size = (roi.size - 0.04f).coerceAtLeast(0.06f)) },
+                    modifier = Modifier.weight(1f).height(44.dp)
+                ) { Text("영역 작게") }
+                OutlinedButton(
+                    onClick = { roi = roi.copy(size = (roi.size + 0.04f).coerceAtMost(0.85f)) },
+                    modifier = Modifier.weight(1f).height(44.dp)
+                ) { Text("영역 크게") }
             }
 
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(
-                    onClick = { pendingSave = true; saveMsg = "저장 중…" },
+                    onClick = { pendingSave = true },
                     modifier = Modifier.weight(1f).height(50.dp)
                 ) { Text("측정 저장", fontSize = 16.sp) }
                 OutlinedButton(
                     onClick = { showSettings = !showSettings },
                     modifier = Modifier.height(50.dp)
-                ) { Text(if (showSettings) "설정 닫기" else "설정") }
+                ) { Text(if (showSettings) "닫기" else "설정") }
+                OutlinedButton(
+                    onClick = { showHelp = true },
+                    modifier = Modifier.height(50.dp)
+                ) { Text("도움말") }
             }
 
-            if (saveMsg.isNotEmpty()) {
-                Text(saveMsg, fontSize = 11.sp, color = DIM, fontFamily = FontFamily.Monospace)
+            if (msg.isNotEmpty()) {
+                Text(msg, fontSize = 11.sp, color = DIM, fontFamily = FontFamily.Monospace)
             }
         }
 
-        // ================= 설정 (접힘, 높이 제한) =================
+        // ─────────── 설정 ───────────
         if (showSettings) {
             Column(
                 Modifier
                     .fillMaxWidth()
-                    .heightIn(max = 300.dp)
-                    .background(Color(0xFF101518))
+                    .heightIn(max = 320.dp)
+                    .background(Color(0xFF0F1417))
                     .verticalScroll(rememberScrollState())
                     .padding(14.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+                verticalArrangement = Arrangement.spacedBy(11.dp)
             ) {
-                Text("상세 측정값", fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                StatLine("A", statsA, A_COLOR)
-                StatLine("B", statsB, B_COLOR)
+                Text("양품 기준 등록", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                Text(
+                    "양품이 확실한 프리즘을 검사 영역에 놓고 「양품으로 등록」을 누르세요. " +
+                        "여러 개를 등록할수록 기준이 정확해집니다. ${Baseline.MIN_SAMPLES}개부터 판정이 시작됩니다.",
+                    fontSize = 12.sp, color = DIM
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = { pendingRegister = true },
+                        modifier = Modifier.weight(1f).height(46.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = OK, contentColor = Color.Black)
+                    ) { Text("양품으로 등록", fontWeight = FontWeight.Bold) }
+                    OutlinedButton(
+                        onClick = {
+                            baseline = baseline.cleared()
+                            Baseline.save(context, baseline); msg = "기준 초기화됨"
+                        },
+                        modifier = Modifier.height(46.dp)
+                    ) { Text("초기화") }
+                }
+                Text(
+                    if (baseline.n == 0) "등록된 양품 없음"
+                    else "등록 %d개 · 평균 %.1f · 편차 %.1f · 합격 상한 %.1f · 불량 하한 %.1f"
+                        .format(baseline.n, baseline.mean, baseline.sd, baseline.passLimit, baseline.failLimit),
+                    fontSize = 11.sp, color = DIM, fontFamily = FontFamily.Monospace
+                )
 
-                HorizontalDivider(color = Color(0xFF2A3136))
+                HorizontalDivider(color = Color(0xFF262E33))
 
-                Text("수동 조정 — 고정 상태에서만 반영됩니다",
-                    fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                Text("현재 측정값", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                Text(
+                    ("얼룩 지수 %.1f · 정상면 %d · 최대밝기 %d · 넓이 %.2f%%\n" +
+                        "선명도 %.1f · 포화 %.2f%% · 화소 %d")
+                        .format(stats.stainIndex, stats.median, stats.max,
+                            stats.brightArea * 100, stats.focus, stats.satRatio * 100, stats.pixels),
+                    fontSize = 11.sp, color = DIM, fontFamily = FontFamily.Monospace
+                )
 
+                HorizontalDivider(color = Color(0xFF262E33))
+
+                Text("카메라 수동 조정 — 고정 상태에서만 반영", fontWeight = FontWeight.Bold, fontSize = 14.sp)
                 val isoLo = caps.isoRange?.lower ?: 50
                 val isoHi = caps.isoRange?.upper ?: 800
                 Sld("ISO", "${settings.iso}", settings.iso.toFloat(), isoLo.toFloat()..isoHi.toFloat()) {
@@ -425,64 +359,89 @@ private fun Scope(controller: CameraController) {
                     label = { Text("메모 (샘플 번호 등)") },
                     singleLine = true, modifier = Modifier.fillMaxWidth()
                 )
-                OutlinedTextField(
-                    value = lightMode, onValueChange = { lightMode = it },
-                    label = { Text("조명 조건 이름") },
-                    singleLine = true, modifier = Modifier.fillMaxWidth()
+
+                Text(
+                    "카메라 ${caps.cameraId} · ${caps.hardwareLevelName}" +
+                        (caps.minFocusMm?.let { " · 최소 초점거리 %.0f mm".format(it) } ?: "") +
+                        "\n이미지 Pictures/PrismScope · 로그 Documents/PrismScope\n앱 버전 $appVersion",
+                    fontSize = 11.sp, color = Color(0xFF67737A), fontFamily = FontFamily.Monospace
                 )
-
-                AppliedPanel(caps, applied)
-
-                Text("이미지 Pictures/PrismScope · 로그 Documents/PrismScope",
-                    fontSize = 11.sp, color = Color(0xFF6B767C))
-                Text("앱 버전 $appVersion",
-                    fontSize = 11.sp, color = Color(0xFF6B767C), fontFamily = FontFamily.Monospace)
             }
         }
     }
 }
 
-/* ---------------- 부품 ---------------- */
+/* ───────────── 부품 ───────────── */
 
 @Composable
-private fun Result(big: String, meaning: String, advice: String, color: Color) {
-    Column(
+private fun VerdictCard(v: Verdict, index: Double, b: Baseline) {
+    val color = when (v) {
+        Verdict.PASS -> OK
+        Verdict.RECHECK -> WARN
+        Verdict.FAIL -> BAD
+        Verdict.NOT_READY -> IDLE
+    }
+    Row(
         Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(10.dp))
             .background(CARD)
-            .padding(horizontal = 14.dp, vertical = 10.dp)
+            .padding(14.dp),
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(big, fontSize = 38.sp, fontWeight = FontWeight.Bold, color = color,
-            fontFamily = FontFamily.Monospace)
-        Text(meaning, fontSize = 12.sp, color = DIM)
-        Text(advice, fontSize = 13.sp, color = color, fontWeight = FontWeight.Medium)
-    }
-}
-
-@Composable
-private fun Btn(
-    text: String, active: Boolean, color: Color,
-    modifier: Modifier = Modifier, onClick: () -> Unit,
-) {
-    if (active) {
-        Button(onClick = onClick, modifier = modifier.height(44.dp),
-            colors = ButtonDefaults.buttonColors(containerColor = color, contentColor = Color.Black)
-        ) { Text(text, fontSize = 13.sp, fontWeight = FontWeight.Bold) }
-    } else {
-        OutlinedButton(onClick = onClick, modifier = modifier.height(44.dp)) {
-            Text(text, fontSize = 13.sp, color = color)
+        Box(
+            Modifier.size(46.dp).clip(CircleShape).background(color),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                when (v) {
+                    Verdict.PASS -> "OK"
+                    Verdict.RECHECK -> "?"
+                    Verdict.FAIL -> "NG"
+                    Verdict.NOT_READY -> "–"
+                },
+                color = Color.Black, fontWeight = FontWeight.Bold, fontSize = 16.sp
+            )
+        }
+        Spacer(Modifier.width(14.dp))
+        Column(Modifier.weight(1f)) {
+            Text(v.label, fontSize = 26.sp, fontWeight = FontWeight.Bold, color = color)
+            Text(
+                if (b.ready) "얼룩 지수 %.1f  (합격 %.1f 미만)".format(index, b.passLimit)
+                else "얼룩 지수 %.1f · 설정에서 양품을 %d개 이상 등록하세요"
+                    .format(index, Baseline.MIN_SAMPLES),
+                fontSize = 12.sp, color = DIM, fontFamily = FontFamily.Monospace
+            )
         }
     }
 }
 
 @Composable
-private fun StatLine(name: String, s: RoiStats, color: Color) {
-    Text(
-        "$name  평균 %.1f   최소 %d   최대 %d   편차 %.1f   포화 %.2f%%   선명도 %.1f"
-            .format(s.mean, s.min, s.max, s.stdDev, s.satRatio * 100, s.focus),
-        fontSize = 11.sp, color = color, fontFamily = FontFamily.Monospace
-    )
+private fun HelpOverlay(onClose: () -> Unit) {
+    Box(
+        Modifier.fillMaxSize().background(Color(0xF0000000)).padding(20.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(11.dp)) {
+            Text("사용 순서", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = Color.White)
+            listOf(
+                "1. 프리즘을 지그에 놓고 조명을 켠다",
+                "2. 노란 사각형이 프리즘을 덮도록 화면을 눌러 옮기고 크기를 맞춘다",
+                "3. 화면이 잘 보이면 「현재 상태로 고정」을 누른다 — 이후 밝기가 변하지 않는다",
+                "4. 설정 → 양품 프리즘을 놓고 「양품으로 등록」을 5개 이상 반복한다",
+                "5. 이제 프리즘을 올릴 때마다 양품 / 재검 / 불량이 화면에 뜬다",
+                "6. 기록이 필요하면 「측정 저장」을 누른다",
+            ).forEach { Text(it, fontSize = 14.sp, color = Color.White, lineHeight = 20.sp) }
+            Text(
+                "얼룩 지수 = 검사 영역에서 가장 밝은 부분이 정상면보다 얼마나 밝은가.\n" +
+                    "얼룩은 빛을 산란시켜 밝게 뜨므로 지수가 클수록 얼룩이 심하다.",
+                fontSize = 12.sp, color = DIM, lineHeight = 18.sp
+            )
+            Button(onClick = onClose, modifier = Modifier.fillMaxWidth().height(48.dp)) {
+                Text("닫기")
+            }
+        }
+    }
 }
 
 @Composable
@@ -502,52 +461,11 @@ private fun Sld(
     }
 }
 
-@Composable
-private fun AppliedPanel(caps: CameraCaps, a: AppliedCamera) {
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(6.dp))
-            .background(Color(0xFF12171A))
-            .padding(10.dp)
-    ) {
-        Text("카메라가 실제로 적용한 값", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-        Text(
-            "ISO ${a.iso ?: "-"}   노출 ${a.exposureNs?.let { "%.2f ms".format(it / 1e6) } ?: "-"}   " +
-                "초점 ${a.focusDiopter?.let { if (it > 0f) "%.0f mm".format(1000f / it) else "무한대" } ?: "-"}",
-            fontSize = 12.sp, fontFamily = FontFamily.Monospace, color = Color(0xFFB0BEC5)
-        )
-        val flags = listOf(
-            "자동노출" to a.aeOff, "자동초점" to a.afOff, "화이트밸런스" to a.awbOff,
-            "노이즈리덕션" to a.nrOff, "샤프닝" to a.edgeOff
-        )
-        Text(
-            flags.joinToString("  ") { (n, off) -> if (off) "$n 끔 ✓" else "$n 켜짐 ✗" },
-            fontSize = 11.sp, fontFamily = FontFamily.Monospace,
-            color = if (flags.all { it.second }) OK else WARN
-        )
-        Text(
-            "카메라 ${caps.cameraId} · ${caps.hardwareLevelName}" +
-                (if (caps.supportsManualSensor) " · 수동제어 지원 ✓" else " · 수동제어 불가 ✗") +
-                (caps.minFocusMm?.let { " · 최소 초점거리 %.0f mm".format(it) } ?: " · 고정초점"),
-            fontSize = 11.sp, color = DIM
-        )
-        if (!caps.supportsManualSensor) {
-            Text("이 렌즈는 수동 노출을 지원하지 않습니다. 판정에 쓸 수 없습니다.",
-                fontSize = 11.sp, color = BAD)
-        }
-    }
-}
+/* ───────────── 좌표 ───────────── */
 
-/* ---------------- 좌표 ---------------- */
-
-/**
- * FIT_CENTER 로 표시된 프레임의 화면상 위치. [left, top, width, height].
- * ROI 는 화면 정규화 좌표라 화면에 그리려면 이 사각형이 필요하다.
- */
+/** FIT_CENTER 로 표시된 프레임의 화면상 위치. [left, top, width, height]. */
 private fun fitRect(box: Size, fw: Int, fh: Int): FloatArray? {
     if (box.width <= 0f || box.height <= 0f || fw <= 0 || fh <= 0) return null
-    // 분석 버퍼는 센서 방향(가로)이고 화면은 세로다. 보이는 비율에 맞춰 회전 보정.
     val frameAspect = if (box.width < box.height) fh.toFloat() / fw else fw.toFloat() / fh
     val boxAspect = box.width / box.height
     return if (boxAspect > frameAspect) {
@@ -560,25 +478,18 @@ private fun fitRect(box: Size, fw: Int, fh: Int): FloatArray? {
 }
 
 private fun buildCsvRow(
-    note: String, lightMode: String, a: RoiStats, b: RoiStats,
-    cam: AppliedCamera, s: ManualSettings, ra: Roi, rb: Roi,
-    w: Int, h: Int, file: String, appVersion: String,
+    note: String, s: RoiStats, b: Baseline, cam: AppliedCamera, m: ManualSettings,
+    roi: Roi, w: Int, h: Int, file: String, appVersion: String,
 ): String {
     fun q(v: String) = "\"" + v.replace("\"", "\"\"") + "\""
-    val c = Stats.contrast(a, b)
     return listOf(
-        q(Store.timestamp()), q(note), q(lightMode),
-        "%.3f".format(a.mean), a.min, a.max, "%.3f".format(a.stdDev),
-        "%.5f".format(a.satRatio), "%.3f".format(a.focus),
-        "%.3f".format(b.mean), b.min, b.max, "%.3f".format(b.stdDev),
-        "%.5f".format(b.satRatio), "%.3f".format(b.focus),
-        "%.5f".format(c), if (a.mean <= BG_PASS_LEVEL) 1 else 0,
-        cam.iso ?: "", cam.exposureNs ?: "", cam.focusDiopter ?: "",
-        cam.aeMode ?: "", cam.afMode ?: "", cam.awbMode ?: "",
-        cam.noiseReduction ?: "", cam.edgeMode ?: "",
-        s.iso, s.exposureNs, "%.3f".format(s.focusDiopter), if (s.locked) 1 else 0,
-        "%.4f".format(ra.cx), "%.4f".format(ra.cy), "%.4f".format(ra.size),
-        "%.4f".format(rb.cx), "%.4f".format(rb.cy), "%.4f".format(rb.size),
+        q(Store.timestamp()), q(note), q(b.judge(s.stainIndex).label),
+        "%.3f".format(s.stainIndex), s.median, s.p99, s.max, "%.3f".format(s.mean),
+        "%.5f".format(s.brightArea), "%.5f".format(s.satRatio), "%.3f".format(s.focus),
+        b.n, "%.3f".format(b.mean), "%.3f".format(b.sd),
+        "%.3f".format(b.passLimit), "%.3f".format(b.failLimit),
+        cam.iso ?: "", cam.exposureNs ?: "", cam.focusDiopter ?: "", if (m.locked) 1 else 0,
+        "%.4f".format(roi.cx), "%.4f".format(roi.cy), "%.4f".format(roi.size),
         w, h, q(file), q(appVersion)
     ).joinToString(",")
 }
