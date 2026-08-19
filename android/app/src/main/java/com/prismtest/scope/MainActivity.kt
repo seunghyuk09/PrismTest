@@ -221,8 +221,13 @@ private fun Scope(controller: CameraController) {
                     drawRect(c, Offset(left, top), Size(s, s), style = Stroke(if (active) 6f else 3f))
                     drawContext.canvas.nativeCanvas.drawText(label, left + 6f, top - 12f, p)
                 }
-                draw(roiB, B_COLOR, !editingA, "B  배경", paintB)
-                draw(roiA, A_COLOR, editingA, "A  결함", paintA)
+                if (mode == Mode.CONTRAST) {
+                    draw(roiB, B_COLOR, !editingA, "B  정상부", paintB)
+                    draw(roiA, A_COLOR, editingA, "A  결함", paintA)
+                } else {
+                    // 배경 검증은 박스 하나로 충분하다
+                    draw(roiA, A_COLOR, true, "배경 측정", paintA)
+                }
             }
 
             if (showHelp) {
@@ -235,8 +240,12 @@ private fun Scope(controller: CameraController) {
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            "노란 A 박스를 결함 위에, 파란 B 박스를 깨끗한 배경 위에 놓으세요.\n" +
-                                "아래 버튼으로 박스를 고르고 화면을 누르면 이동합니다.",
+                            if (mode == Mode.CONTRAST)
+                                "노란 A 박스를 결함 위에, 파란 B 박스를 같은 프리즘의 깨끗한 면 위에 놓으세요.\n" +
+                                    "아래 버튼으로 박스를 고르고 화면을 누르면 이동합니다."
+                            else
+                                "프리즘을 치우고, 노란 박스를 배경(광트랩 개구부) 위에 놓으세요.\n" +
+                                    "배경이 얼마나 어두운지만 잽니다.",
                             fontSize = 12.sp, color = Color.White, modifier = Modifier.weight(1f)
                         )
                         TextButton(onClick = { showHelp = false }) { Text("닫기", fontSize = 12.sp) }
@@ -257,7 +266,7 @@ private fun Scope(controller: CameraController) {
                 Mode.entries.forEachIndexed { i, m ->
                     SegmentedButton(
                         selected = mode == m,
-                        onClick = { mode = m },
+                        onClick = { mode = m; if (m == Mode.BACKGROUND) editingA = true },
                         shape = SegmentedButtonDefaults.itemShape(i, Mode.entries.size)
                     ) { Text(m.label, fontSize = 14.sp) }
                 }
@@ -268,7 +277,7 @@ private fun Scope(controller: CameraController) {
                     val c = Stats.contrast(statsA, statsB) * 100
                     Result(
                         big = "%.1f%%".format(c),
-                        meaning = "A 박스가 B 박스보다 이만큼 밝습니다",
+                        meaning = "결함부(A)가 정상부(B)보다 이만큼 밝습니다",
                         advice = when {
                             c >= 15 -> "좋습니다. 이 조명 조건을 기록해 두세요"
                             c >= 5 -> "보이긴 합니다. 조명 각도를 더 낮춰 15%를 노려보세요"
@@ -286,7 +295,7 @@ private fun Scope(controller: CameraController) {
                     val v = statsA.mean
                     Result(
                         big = "%.1f".format(v),
-                        meaning = "A 박스의 밝기입니다 (0 = 완전한 검정, 255 = 흰색)",
+                        meaning = "배경 박스의 밝기입니다 (0 = 완전한 검정, 255 = 흰색)",
                         advice = if (v <= BG_PASS_LEVEL) "합격입니다. 배경이 충분히 어둡습니다"
                         else "기준은 8 이하입니다. 차광판을 세우고 배경을 더 멀리 두세요",
                         color = if (v <= BG_PASS_LEVEL) OK else BAD
@@ -341,8 +350,12 @@ private fun Scope(controller: CameraController) {
 
             // ---- 박스 조작 ----
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Btn("A 옮기기", editingA, A_COLOR, Modifier.weight(1f)) { editingA = true }
-                Btn("B 옮기기", !editingA, B_COLOR, Modifier.weight(1f)) { editingA = false }
+                if (mode == Mode.CONTRAST) {
+                    Btn("A 옮기기", editingA, A_COLOR, Modifier.weight(1f)) { editingA = true }
+                    Btn("B 옮기기", !editingA, B_COLOR, Modifier.weight(1f)) { editingA = false }
+                } else {
+                    Btn("배경 박스 이동", true, A_COLOR, Modifier.weight(1f)) { editingA = true }
+                }
                 Btn("작게", false, DIM) {
                     if (editingA) roiA = roiA.copy(size = (roiA.size - 0.03f).coerceAtLeast(0.04f))
                     else roiB = roiB.copy(size = (roiB.size - 0.03f).coerceAtLeast(0.04f))
