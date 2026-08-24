@@ -25,17 +25,27 @@ object Store {
 
     private val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US)
 
-    val csvHeader = listOf(
-        "timestamp", "note", "verdict",
-        "stainIndex", "median", "p99", "max", "mean",
-        "brightArea", "satRatio", "focus",
-        "scratchScore", "elongation",
-        "baseline_n", "baseline_mean", "baseline_sd", "passLimit", "failLimit",
-        "scratchBase_n", "scratchPassLimit",
-        "iso", "exposureNs", "focusDiopter", "locked",
-        "roi_cx", "roi_cy", "roi_size",
-        "frameW", "frameH", "imageFile", "appVersion",
-    ).joinToString(",")
+    /**
+     * 유형 열은 [DefectType] 에서 만든다. 유형을 추가하면 헤더와 행이 함께 늘어나므로
+     * 둘이 어긋날 일이 없다 — 열 순서는 MainActivity 의 buildCsvRow 와 같다.
+     */
+    val csvHeader: String = (
+        listOf("timestamp", "note", "mode", "verdict") +
+            DefectType.values().flatMap {
+                listOf(
+                    "${it.key}_score", "${it.key}_verdict",
+                    "${it.key}_good_n", "${it.key}_bad_n",
+                    "${it.key}_pass", "${it.key}_fail",
+                )
+            } +
+            listOf(
+                "median", "p99", "max", "contrast", "darkContrast",
+                "brightArea", "linearity", "spot", "satRatio", "focus",
+                "iso", "exposureNs", "focusDiopter", "locked",
+                "roi_cx", "roi_cy", "roi_size",
+                "frameW", "frameH", "imageFile", "appVersion",
+            )
+        ).joinToString(",")
 
     /** Y 평면을 그레이스케일 PNG 로 저장하고 파일명을 돌려준다. */
     fun saveFrame(context: Context, image: ImageProxy, tag: String): String? {

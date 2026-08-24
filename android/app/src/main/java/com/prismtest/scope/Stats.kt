@@ -5,17 +5,19 @@ import kotlin.math.abs
 import kotlin.math.sqrt
 
 /**
- * 검사 영역의 밝기 분포에서 얼룩 지수를 뽑는다.
+ * 검사 영역의 밝기 분포에서 결함의 **모양 특징**을 뽑는다.
  *
- * 암시야 조명에서 정상면은 어둡고 얼룩·이물은 빛을 산란시켜 밝게 뜬다.
- * 따라서 **영역 안에서 가장 밝은 부분이 보통 부분보다 얼마나 밝은가**가
- * 곧 결함의 세기다.
+ * 암시야 조명에서 정상면은 어둡고 결함은 빛을 산란시켜 밝게 뜬다.
+ * 다만 "밝다"는 것만으로는 얼룩·이물·스크래치가 구분되지 않는다.
+ * 세 가지는 **밝은 부분의 모양**이 다르다.
  *
- *   얼룩 지수 = 상위 1% 밝기(p99) − 중앙값(median)
+ *   얼룩     넓게 퍼짐        → 대비 있음, 넓이 큼, 선형성 낮음
+ *   흰색 이물  작고 아주 밝음   → 최대값이 상위 1%보다 훨씬 높음
+ *   스크래치   가늘고 긴 선     → 선형성 높음
+ *   검정 이물  빛을 막음        → 아래쪽 대비(중앙값 − 하위 1%)로만 보인다
  *
- * 나눗셈이 아니라 뺄셈을 쓴다. 암시야에서는 중앙값이 2~3 까지 내려가는데
- * 그걸로 나누면 값이 폭주해 비교가 불가능해진다. 촬영 조건을 고정해 두면
- * 절대 밝기 차이가 그대로 비교 가능한 양이 된다.
+ * 그래서 여기서는 판정하지 않고 **원시 특징만** 뽑는다. 유형별 점수는
+ * [DefectType] 이 이 값들을 조합해서 만든다.
  *
  * 값은 모두 YUV 의 Y 평면(휘도) 기준 0~255 다. 컬러를 쓰지 않는 이유는
  * 판정에 쓰는 것이 산란 광량이고, 폰 ISP 의 컬러 처리는 기기마다 다르기 때문이다.
@@ -23,34 +25,33 @@ import kotlin.math.sqrt
 data class RoiStats(
     /** 중앙값 — 정상면의 밝기 */
     val median: Int,
-    /** 상위 1% 밝기 — 가장 밝은 결함부 */
+    /** 상위 1% 밝기 */
     val p99: Int,
-    val mean: Double,
+    /** 최대 밝기 */
     val max: Int,
-    /** 얼룩 지수 = p99 − median (0~255) */
-    val stainIndex: Double,
-    /** 밝은 화소가 차지하는 비율 (0~1) — 얼룩의 넓이 */
+    val mean: Double,
+    /** 위쪽 대비 = p99 − median. 밝게 뜨는 결함의 세기 */
+    val contrast: Double,
+    /** 아래쪽 대비 = median − p1. 빛을 막는 결함의 세기 */
+    val darkContrast: Double,
+    /** 밝은 화소가 차지하는 비율 (0~1) — 결함의 넓이 */
     val brightArea: Double,
+    /** 밝은 화소 분포의 선형성 (0~1). 0이면 원형, 1이면 가늘고 긴 선 */
+    val linearity: Double,
+    /**
+     * 점 세기 = max − p99.
+     * 아주 작고 밝은 알갱이는 화소 수가 적어 p99 를 못 올리지만 max 는 올린다.
+     * 넓은 얼룩은 반대로 둘이 붙는다. 그래서 이 차이가 곧 "작고 밝은 점"의 척도다.
+     */
+    val spot: Double,
     /** 250 이상 화소 비율 — 글레어·포화 감지 */
     val satRatio: Double,
     /** Laplacian 절대값 평균 — 초점 판정 */
     val focus: Double,
-    /**
-     * 밝은 화소 분포의 장축/단축 비. 1이면 원형, 크면 선형이다.
-     * 얼룩은 넓게 퍼져 1에 가깝고, 스크래치는 가늘고 길어 크게 나온다.
-     */
-    val elongation: Double,
-    /**
-     * 스크래치 점수 = 대비 × 선형성.
-     *
-     * 얼룩과 스크래치는 둘 다 밝게 뜨지만 형태가 다르다. 대비만 보면 구분이 안 되고,
-     * 형태만 보면 흐린 자국도 선형이면 잡힌다. 둘을 곱해야 "가늘고 길면서 밝은 것"만 남는다.
-     */
-    val scratchScore: Double,
     val pixels: Int,
 ) {
     companion object {
-        val EMPTY = RoiStats(0, 0, 0.0, 0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0)
+        val EMPTY = RoiStats(0, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0)
     }
 }
 
@@ -121,6 +122,7 @@ object Stats {
             return 255
         }
 
+        val p1 = percentile(0.01)
         val median = percentile(0.50)
         val p99 = percentile(0.99)
         var max = 0
@@ -128,15 +130,15 @@ object Stats {
         var sat = 0
         for (v in 250..255) sat += hist[v]
 
-        val stain = (p99 - median).toDouble()
-        // 얼룩의 넓이: 정상면과 결함의 중간 밝기를 넘는 화소 비율
-        val cut = median + (stain / 2.0).toInt()
+        val contrast = (p99 - median).toDouble()
+        // 결함의 넓이: 정상면과 결함의 중간 밝기를 넘는 화소 비율
+        val cut = median + (contrast / 2.0).toInt()
         var bright = 0
         for (v in (cut + 1).coerceIn(0, 255)..255) bright += hist[v]
 
         // 밝은 화소의 2차 모멘트로 선형성을 잰다.
         // 좌표를 모아두지 않고 합만 누적하므로 메모리를 쓰지 않는다.
-        val thr = median + (stain * 0.6).toInt()
+        val thr = median + (contrast * 0.6).toInt()
         var bn = 0L
         var sx = 0.0; var sy = 0.0
         var sxx = 0.0; var syy = 0.0; var sxy = 0.0
@@ -169,9 +171,8 @@ object Stats {
             if (e2 > 0.5) sqrt(e1 / e2).coerceAtMost(10.0) else 10.0
         } else 1.0
 
-        // 선형성 0~1 로 정규화. 신장도 1이면 0점(원형 = 얼룩), 5 이상이면 만점.
+        // 선형성 0~1 로 정규화. 신장도 1이면 0점(원형), 5 이상이면 만점(선).
         val linearity = ((elong - 1.0) / 4.0).coerceIn(0.0, 1.0)
-        val scratch = stain * linearity
 
         // Laplacian 절대값 평균 — 경계에서 한 칸 안쪽만 훑는다
         var lapSum = 0.0
@@ -192,14 +193,15 @@ object Stats {
         return RoiStats(
             median = median,
             p99 = p99,
-            mean = sum.toDouble() / n,
             max = max,
-            stainIndex = stain,
+            mean = sum.toDouble() / n,
+            contrast = contrast,
+            darkContrast = (median - p1).toDouble(),
             brightArea = bright.toDouble() / n,
+            linearity = linearity,
+            spot = (max - p99).toDouble(),
             satRatio = sat.toDouble() / n,
             focus = if (lapN > 0) lapSum / lapN else 0.0,
-            elongation = elong,
-            scratchScore = scratch,
             pixels = n,
         )
     }

@@ -42,10 +42,13 @@ import java.util.concurrent.Executors
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
-/** 스윕 시간. 한 바퀴 돌리기에 충분하면서 지루하지 않은 길이. */
-private const val SWEEP_SECONDS = 6
-/** 스윕 중 최소 밝기 변화 총량. 이보다 작으면 각도를 거의 안 바꾼 것이다. */
-private const val MIN_SWEEP_MOTION = 60.0
+/** 검사 시간. 손으로 한 바퀴 돌려보기에 충분하면서 지루하지 않은 길이. */
+private const val SWEEP_SECONDS = 8
+
+/** 검사 중 최소 밝기 변화 총량. 이보다 작으면 각도를 거의 안 바꾼 것이다. */
+private const val MIN_SWEEP_MOTION = 80.0
+
+private val TYPES = DefectType.values()
 
 private val OK = Color(0xFF3DBE63)
 private val WARN = Color(0xFFE8A93B)
@@ -55,6 +58,13 @@ private val FRAME = Color(0xFFFFC107)
 private val PANEL = Color(0xFF14181B)
 private val CARD = Color(0xFF1C2227)
 private val DIM = Color(0xFF8B979D)
+
+private fun colorOf(v: Verdict) = when (v) {
+    Verdict.PASS -> OK
+    Verdict.RECHECK -> WARN
+    Verdict.FAIL -> BAD
+    Verdict.NOT_READY -> IDLE
+}
 
 class MainActivity : ComponentActivity() {
 
@@ -108,25 +118,27 @@ private fun Inspect(controller: CameraController) {
     var caps by remember { mutableStateOf(CameraCaps()) }
     var applied by remember { mutableStateOf(AppliedCamera()) }
 
-    var roi by remember { mutableStateOf(Roi(0.5f, 0.5f, 0.30f)) }
-    var stats by remember { mutableStateOf(RoiStats.EMPTY) }
+    var roi by remember { mutableStateOf(Roi(0.5f, 0.5f, 0.45f)) }
+    var live by remember { mutableStateOf(RoiStats.EMPTY) }
     var frameW by remember { mutableIntStateOf(0) }
     var frameH by remember { mutableIntStateOf(0) }
 
-    var baseline by remember { mutableStateOf(Baseline.load(context, Baseline.KIND_STAIN)) }
-    var scratchBase by remember { mutableStateOf(Baseline.load(context, Baseline.KIND_SCRATCH)) }
+    // 유형별 판정 기준. 등록한 양품·불량 샘플에서 계산된다.
+    var models by remember {
+        mutableStateOf(TYPES.associateWith { DefectModel.load(context, it) })
+    }
 
-    // 스크래치 스윕 — 손으로 각도를 바꾸는 동안 최댓값을 잡는다.
+    // 검사 = 손으로 돌리는 동안의 유형별 최댓값 수집.
     var sweeping by remember { mutableStateOf(false) }
     var sweepLeft by remember { mutableIntStateOf(0) }
-    var sweepMax by remember { mutableStateOf(0.0) }
-    var sweepMotion by remember { mutableStateOf(0.0) }
-    var sweepResult by remember { mutableStateOf<Double?>(null) }
+    var peaks by remember { mutableStateOf(List(TYPES.size) { 0.0 }) }
+    var result by remember { mutableStateOf<List<Double>?>(null) }
+    var motion by remember { mutableStateOf(0.0) }
     var lastMean by remember { mutableStateOf(-1.0) }
+
     var note by remember { mutableStateOf("") }
     var msg by remember { mutableStateOf("") }
     var pendingSave by remember { mutableStateOf(false) }
-    var pendingRegister by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
     var showHelp by remember { mutableStateOf(false) }
 
@@ -149,30 +161,36 @@ private fun Inspect(controller: CameraController) {
                     frameW = image.width
                     frameH = image.height
                     val s = Stats.analyze(image, roiRef.value)
-                    stats = s
+                    live = s
                     applied = controller.applied
 
                     if (sweeping) {
-                        if (s.scratchScore > sweepMax) sweepMax = s.scratchScore
+                        // 유형마다 최댓값을 따로 잡는다. 스크래치가 번쩍이는 각도와
+                        // 얼룩이 가장 잘 보이는 각도는 달라서 한 프레임으로는 못 잡는다.
+                        val cur = peaks
+                        var changed = false
+                        val next = ArrayList<Double>(TYPES.size)
+                        for (i in TYPES.indices) {
+                            val v = TYPES[i].score(s)
+                            if (v > cur[i]) {
+                                next.add(v)
+                                changed = true
+                            } else {
+                                next.add(cur[i])
+                            }
+                        }
+                        if (changed) peaks = next
                         // 프레임 간 밝기 변화로 "실제로 돌리고 있는지"를 본다.
-                        // 가만히 두면 변화가 0에 가까워 스윕이 성립하지 않는다.
-                        if (lastMean >= 0) sweepMotion += abs(s.mean - lastMean)
+                        if (lastMean >= 0) motion += abs(s.mean - lastMean)
                         lastMean = s.mean
                     }
-                    if (pendingRegister) {
-                        pendingRegister = false
-                        val b = baseline.plus(s.stainIndex)
-                        baseline = b
-                        Baseline.save(context, Baseline.KIND_STAIN, b)
-                        msg = "얼룩 기준 · 양품 ${b.n}개 등록됨" +
-                            if (b.ready) "" else " (${Baseline.MIN_SAMPLES}개 이상 필요)"
-                    }
+
                     if (pendingSave) {
                         pendingSave = false
                         val file = Store.saveFrame(context, image, "cap")
                         Store.appendCsv(
                             context,
-                            buildCsvRow(note, s, baseline, scratchBase, controller.applied, settings,
+                            buildCsvRow(note, s, result, models, controller.applied, settings,
                                 roiRef.value, image.width, image.height, file ?: "", appVersion)
                         )
                         msg = if (file != null) "저장됨" else "저장 실패"
@@ -185,30 +203,45 @@ private fun Inspect(controller: CameraController) {
         )
     }
 
-    // 스윕 타이머. 프레임 콜백이 아니라 UI 쪽에서 시간을 센다.
+    // 검사 타이머. 프레임 콜백이 아니라 UI 쪽에서 시간을 센다.
     LaunchedEffect(sweeping) {
         if (!sweeping) return@LaunchedEffect
-        sweepMax = 0.0; sweepMotion = 0.0; lastMean = -1.0; sweepResult = null
+        peaks = List(TYPES.size) { 0.0 }
+        motion = 0.0
+        lastMean = -1.0
+        result = null
+        msg = ""
         for (i in SWEEP_SECONDS downTo 1) {
             sweepLeft = i
             delay(1000)
         }
         sweepLeft = 0
         sweeping = false
-        sweepResult = sweepMax
+        result = peaks
     }
 
     val labelPaint = remember {
         android.graphics.Paint().apply {
             color = android.graphics.Color.parseColor("#FFC107")
-            textSize = 38f; isFakeBoldText = true; isAntiAlias = true
+            textSize = 38f
+            isFakeBoldText = true
+            isAntiAlias = true
         }
     }
 
-    val verdict = baseline.judge(stats.stainIndex)
-    val tooDark = stats.median < 3 && stats.p99 < 6
-    val blurry = stats.focus < 1.0 && !tooDark
-    val glare = stats.satRatio > 0.01
+    // 표시할 점수: 검사가 끝났으면 그 결과, 아니면 지금 화면의 값
+    val shown: List<Double> = result ?: if (sweeping) peaks else TYPES.map { it.score(live) }
+    val verdicts = TYPES.mapIndexed { i, t -> models.getValue(t).judge(shown[i]) }
+    val overall = when {
+        result == null -> null
+        verdicts.any { it == Verdict.FAIL } -> Verdict.FAIL
+        verdicts.any { it == Verdict.RECHECK } -> Verdict.RECHECK
+        verdicts.any { it == Verdict.PASS } -> Verdict.PASS
+        else -> Verdict.NOT_READY
+    }
+
+    val tooDark = live.median < 3 && live.p99 < 6
+    val glare = live.satRatio > 0.01
 
     Column(Modifier.fillMaxSize()) {
 
@@ -239,50 +272,51 @@ private fun Inspect(controller: CameraController) {
                 drawRect(FRAME, Offset(left, top), Size(side, side), style = Stroke(6f))
                 drawContext.canvas.nativeCanvas.drawText("검사 영역", left + 6f, top - 14f, labelPaint)
             }
+
             if (sweeping) {
                 Box(
                     Modifier.align(Alignment.TopCenter).padding(12.dp)
-                        .clip(RoundedCornerShape(10.dp)).background(Color(0xE6000000))
-                        .padding(horizontal = 16.dp, vertical = 12.dp)
+                        .clip(RoundedCornerShape(12.dp)).background(Color(0xE6000000))
+                        .padding(horizontal = 20.dp, vertical = 12.dp)
                 ) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text("프리즘을 천천히 돌리세요", fontSize = 16.sp,
-                            fontWeight = FontWeight.Bold, color = Color.White)
-                        Text("$sweepLeft 초", fontSize = 30.sp, fontWeight = FontWeight.Bold,
-                            color = FRAME, fontFamily = FontFamily.Monospace)
-                        Text("최고 %.1f".format(sweepMax), fontSize = 13.sp,
-                            color = DIM, fontFamily = FontFamily.Monospace)
+                        Text(
+                            "프리즘을 천천히 돌리세요", fontSize = 16.sp,
+                            fontWeight = FontWeight.Bold, color = Color.White
+                        )
+                        Text(
+                            sweepLeft.toString(), fontSize = 40.sp, fontWeight = FontWeight.Bold,
+                            color = FRAME, fontFamily = FontFamily.Monospace
+                        )
                     }
                 }
             }
+
+            // 영역 크기 — 화면 위에 얹어 아래 패널 자리를 먹지 않는다
+            Row(
+                Modifier.align(Alignment.BottomEnd).padding(10.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                RoundBtn("−") { roi = roi.copy(size = (roi.size - 0.05f).coerceAtLeast(0.10f)) }
+                RoundBtn("+") { roi = roi.copy(size = (roi.size + 0.05f).coerceAtMost(0.90f)) }
+            }
+
             if (showHelp) HelpOverlay { showHelp = false }
         }
 
-        // ─────────── 판정 ───────────
+        // ─────────── 조작 + 판정 ───────────
         Column(
             Modifier
                 .fillMaxWidth()
                 .background(PANEL)
-                .padding(horizontal = 14.dp, vertical = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(9.dp)
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(7.dp)
         ) {
-            VerdictCard(verdict, stats.stainIndex, baseline)
-
-            val warning = when {
-                tooDark -> "화면이 너무 어둡습니다. 조명을 켜세요"
-                glare -> "너무 밝아 하얗게 뭉개집니다. 각도를 조정하세요"
-                blurry -> "초점이 흐립니다. 거리를 조정하세요"
-                else -> null
-            }
-            if (warning != null) Text("⚠ $warning", fontSize = 12.sp, color = WARN)
-
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
+            // 촬영 조건
+            Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text(
-                        if (settings.locked) "촬영 조건 고정됨" else "자동 노출 — 측정 전에 고정하세요",
+                        if (settings.locked) "촬영 조건 고정됨" else "자동 노출 — 검사 전에 고정하세요",
                         fontSize = 12.sp, fontWeight = FontWeight.Bold,
                         color = if (settings.locked) OK else WARN
                     )
@@ -294,94 +328,103 @@ private fun Inspect(controller: CameraController) {
                 }
                 if (settings.locked) {
                     OutlinedButton(
-                        onClick = { settings = settings.copy(locked = false); controller.updateManual(settings) },
-                        modifier = Modifier.height(42.dp)
+                        onClick = {
+                            settings = settings.copy(locked = false)
+                            controller.updateManual(settings)
+                        },
+                        modifier = Modifier.height(38.dp),
+                        contentPadding = PaddingValues(horizontal = 14.dp)
                     ) { Text("자동", fontSize = 13.sp) }
                 } else {
                     Button(
-                        onClick = { settings = controller.currentAsManual(settings); controller.updateManual(settings) },
-                        modifier = Modifier.height(42.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = OK, contentColor = Color.Black)
+                        onClick = {
+                            settings = controller.currentAsManual(settings)
+                            controller.updateManual(settings)
+                        },
+                        modifier = Modifier.height(38.dp),
+                        contentPadding = PaddingValues(horizontal = 14.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = OK, contentColor = Color.Black
+                        )
                     ) { Text("현재 상태로 고정", fontSize = 13.sp, fontWeight = FontWeight.Bold) }
                 }
             }
 
-            sweepResult?.let { r ->
-                val v = scratchBase.judge(r)
-                val c = when (v) {
-                    Verdict.PASS -> OK
-                    Verdict.RECHECK -> WARN
-                    Verdict.FAIL -> BAD
-                    Verdict.NOT_READY -> IDLE
-                }
-                Column(
-                    Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp))
-                        .background(CARD).padding(12.dp)
-                ) {
-                    Text("스크래치 검사 결과 — ${v.label}", fontSize = 15.sp,
-                        fontWeight = FontWeight.Bold, color = c)
-                    Text(
-                        if (scratchBase.ready) "최고 점수 %.1f (합격 %.1f 미만)".format(r, scratchBase.passLimit)
-                        else "최고 점수 %.1f · 설정에서 양품 스윕을 %d회 이상 등록하세요"
-                            .format(r, Baseline.MIN_SAMPLES),
-                        fontSize = 12.sp, color = DIM, fontFamily = FontFamily.Monospace
-                    )
-                    if (sweepMotion < MIN_SWEEP_MOTION) {
-                        Text("⚠ 각도 변화가 적습니다. 더 크게 돌려 다시 재세요",
-                            fontSize = 12.sp, color = WARN)
-                    }
-                    Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedButton(onClick = {
-                            val b = scratchBase.plus(r)
-                            scratchBase = b
-                            Baseline.save(context, Baseline.KIND_SCRATCH, b)
-                            msg = "스크래치 기준 · 양품 ${b.n}회 등록됨"
-                            sweepResult = null
-                        }, modifier = Modifier.weight(1f)) { Text("양품으로 등록", fontSize = 13.sp) }
-                        OutlinedButton(onClick = { sweepResult = null },
-                            modifier = Modifier.weight(1f)) { Text("닫기", fontSize = 13.sp) }
-                    }
-                }
-            }
-
+            // 검사 시작
             Button(
                 onClick = { sweeping = true },
                 enabled = !sweeping,
-                modifier = Modifier.fillMaxWidth().height(48.dp),
+                modifier = Modifier.fillMaxWidth().height(54.dp),
+                shape = RoundedCornerShape(12.dp),
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = Color(0xFF2E3A44), contentColor = Color.White
+                    containerColor = Color(0xFF2E6BE6), contentColor = Color.White
                 )
             ) {
                 Text(
-                    if (sweeping) "검사 중… $sweepLeft 초"
-                    else "스크래치 검사 (${SWEEP_SECONDS}초 · 손으로 돌리기)",
-                    fontSize = 15.sp
+                    if (sweeping) "검사 중 " + sweepLeft + "초" else "검사 시작",
+                    fontSize = 18.sp, fontWeight = FontWeight.Bold
+                )
+            }
+
+            // 종합 판정
+            if (overall != null) {
+                Row(
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp))
+                        .background(colorOf(overall)).padding(horizontal = 14.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        overall.label, fontSize = 22.sp, fontWeight = FontWeight.Bold,
+                        color = Color.Black, modifier = Modifier.weight(1f)
+                    )
+                    if (motion < MIN_SWEEP_MOTION) {
+                        Text("각도 변화 부족 — 다시", fontSize = 12.sp, color = Color.Black)
+                    }
+                }
+            }
+
+            val warn = when {
+                tooDark -> "화면이 너무 어둡습니다. 조명을 켜세요"
+                glare -> "너무 밝아 하얗게 뭉개집니다. 각도를 조정하세요"
+                else -> null
+            }
+            if (warn != null) Text("⚠ $warn", fontSize = 12.sp, color = WARN)
+
+            // 유형별 결과 + 등록
+            TYPES.forEachIndexed { i, type ->
+                TypeRow(
+                    type = type,
+                    score = shown[i],
+                    verdict = verdicts[i],
+                    model = models.getValue(type),
+                    armed = result != null && !sweeping,
+                    onGood = {
+                        val m = models.getValue(type).plusGood(shown[i])
+                        DefectModel.save(context, type, m)
+                        models = models + (type to m)
+                        msg = "${type.label} 양품 ${m.good.size}개 등록"
+                    },
+                    onBad = {
+                        val m = models.getValue(type).plusBad(shown[i])
+                        DefectModel.save(context, type, m)
+                        models = models + (type to m)
+                        msg = "${type.label} 불량 ${m.bad.size}개 등록"
+                    },
                 )
             }
 
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(
-                    onClick = { roi = roi.copy(size = (roi.size - 0.04f).coerceAtLeast(0.06f)) },
-                    modifier = Modifier.weight(1f).height(44.dp)
-                ) { Text("영역 작게") }
-                OutlinedButton(
-                    onClick = { roi = roi.copy(size = (roi.size + 0.04f).coerceAtMost(0.85f)) },
-                    modifier = Modifier.weight(1f).height(44.dp)
-                ) { Text("영역 크게") }
-            }
-
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(
                     onClick = { pendingSave = true },
-                    modifier = Modifier.weight(1f).height(50.dp)
-                ) { Text("측정 저장", fontSize = 16.sp) }
+                    modifier = Modifier.weight(1f).height(44.dp)
+                ) { Text("측정 저장", fontSize = 14.sp) }
                 OutlinedButton(
                     onClick = { showSettings = !showSettings },
-                    modifier = Modifier.height(50.dp)
+                    modifier = Modifier.height(44.dp)
                 ) { Text(if (showSettings) "닫기" else "설정") }
                 OutlinedButton(
                     onClick = { showHelp = true },
-                    modifier = Modifier.height(50.dp)
+                    modifier = Modifier.height(44.dp)
                 ) { Text("도움말") }
             }
 
@@ -395,56 +438,42 @@ private fun Inspect(controller: CameraController) {
             Column(
                 Modifier
                     .fillMaxWidth()
-                    .heightIn(max = 320.dp)
+                    .heightIn(max = 300.dp)
                     .background(Color(0xFF0F1417))
                     .verticalScroll(rememberScrollState())
                     .padding(14.dp),
                 verticalArrangement = Arrangement.spacedBy(11.dp)
             ) {
-                Text("양품 기준 등록", fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                Text(
-                    "양품이 확실한 프리즘을 검사 영역에 놓고 「양품으로 등록」을 누르세요. " +
-                        "여러 개를 등록할수록 기준이 정확해집니다. ${Baseline.MIN_SAMPLES}개부터 판정이 시작됩니다.",
-                    fontSize = 12.sp, color = DIM
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(
-                        onClick = { pendingRegister = true },
-                        modifier = Modifier.weight(1f).height(46.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = OK, contentColor = Color.Black)
-                    ) { Text("양품으로 등록", fontWeight = FontWeight.Bold) }
-                    OutlinedButton(
-                        onClick = {
-                            baseline = baseline.cleared()
-                            Baseline.save(context, Baseline.KIND_STAIN, baseline)
-                            scratchBase = scratchBase.cleared()
-                            Baseline.save(context, Baseline.KIND_SCRATCH, scratchBase)
-                            msg = "기준 초기화됨 (얼룩·스크래치)"
-                        },
-                        modifier = Modifier.height(46.dp)
-                    ) { Text("초기화") }
+                Text("등록된 샘플", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                TYPES.forEach { t ->
+                    val m = models.getValue(t)
+                    val b = m.band
+                    Text(
+                        "${t.label} — 양품 ${m.good.size} · 불량 ${m.bad.size} · ${m.state.label}" +
+                            (b?.let { "\n   합격 %.1f 미만 · 불량 %.1f 이상".format(it.pass, it.fail) } ?: ""),
+                        fontSize = 11.sp, color = DIM, fontFamily = FontFamily.Monospace
+                    )
                 }
-                Text(
-                    if (baseline.n == 0) "등록된 양품 없음"
-                    else "등록 %d개 · 평균 %.1f · 편차 %.1f · 합격 상한 %.1f · 불량 하한 %.1f"
-                        .format(baseline.n, baseline.mean, baseline.sd, baseline.passLimit, baseline.failLimit),
-                    fontSize = 11.sp, color = DIM, fontFamily = FontFamily.Monospace
-                )
-                Text(
-                    if (scratchBase.n == 0) "스크래치 기준 없음 — 양품으로 스윕 검사 후 등록"
-                    else "스크래치 · 등록 %d회 · 평균 %.1f · 합격 상한 %.1f"
-                        .format(scratchBase.n, scratchBase.mean, scratchBase.passLimit),
-                    fontSize = 11.sp, color = DIM, fontFamily = FontFamily.Monospace
-                )
+                OutlinedButton(
+                    onClick = {
+                        TYPES.forEach { DefectModel.save(context, it, DefectModel()) }
+                        models = TYPES.associateWith { DefectModel() }
+                        result = null
+                        msg = "모든 기준 초기화됨"
+                    },
+                    modifier = Modifier.height(44.dp)
+                ) { Text("전체 초기화") }
 
                 HorizontalDivider(color = Color(0xFF262E33))
 
-                Text("현재 측정값", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                Text("현재 화면 측정값", fontWeight = FontWeight.Bold, fontSize = 14.sp)
                 Text(
-                    ("얼룩 지수 %.1f · 정상면 %d · 최대밝기 %d · 넓이 %.2f%%\n" +
-                        "스크래치 %.1f · 신장도 %.1f · 선명도 %.1f · 포화 %.2f%%")
-                        .format(stats.stainIndex, stats.median, stats.max, stats.brightArea * 100,
-                            stats.scratchScore, stats.elongation, stats.focus, stats.satRatio * 100),
+                    ("대비 %.1f · 어둠대비 %.1f · 넓이 %.2f%% · 선형성 %.2f\n" +
+                        "점세기 %.1f · 정상면 %d · 선명도 %.1f · 포화 %.2f%%")
+                        .format(
+                            live.contrast, live.darkContrast, live.brightArea * 100,
+                            live.linearity, live.spot, live.median, live.focus, live.satRatio * 100
+                        ),
                     fontSize = 11.sp, color = DIM, fontFamily = FontFamily.Monospace
                 )
 
@@ -454,19 +483,26 @@ private fun Inspect(controller: CameraController) {
                 val isoLo = caps.isoRange?.lower ?: 50
                 val isoHi = caps.isoRange?.upper ?: 800
                 Sld("ISO", "${settings.iso}", settings.iso.toFloat(), isoLo.toFloat()..isoHi.toFloat()) {
-                    settings = settings.copy(iso = it.roundToInt()); controller.updateManual(settings)
+                    settings = settings.copy(iso = it.roundToInt())
+                    controller.updateManual(settings)
                 }
                 val expLo = (caps.exposureRange?.lower ?: 100_000L).toFloat()
                 val expHi = minOf(caps.exposureRange?.upper ?: 100_000_000L, 100_000_000L).toFloat()
-                Sld("노출", "%.1f ms".format(settings.exposureNs / 1e6),
-                    settings.exposureNs.toFloat(), expLo..expHi) {
-                    settings = settings.copy(exposureNs = it.toLong()); controller.updateManual(settings)
+                Sld(
+                    "노출", "%.1f ms".format(settings.exposureNs / 1e6),
+                    settings.exposureNs.toFloat(), expLo..expHi
+                ) {
+                    settings = settings.copy(exposureNs = it.toLong())
+                    controller.updateManual(settings)
                 }
                 val focusHi = if (caps.minFocusDistance > 0f) caps.minFocusDistance else 10f
-                Sld("초점 거리",
+                Sld(
+                    "초점 거리",
                     if (settings.focusDiopter > 0f) "%.0f mm".format(1000f / settings.focusDiopter) else "무한대",
-                    settings.focusDiopter, 0f..focusHi) {
-                    settings = settings.copy(focusDiopter = it); controller.updateManual(settings)
+                    settings.focusDiopter, 0f..focusHi
+                ) {
+                    settings = settings.copy(focusDiopter = it)
+                    controller.updateManual(settings)
                 }
 
                 OutlinedTextField(
@@ -489,45 +525,71 @@ private fun Inspect(controller: CameraController) {
 /* ───────────── 부품 ───────────── */
 
 @Composable
-private fun VerdictCard(v: Verdict, index: Double, b: Baseline) {
-    val color = when (v) {
-        Verdict.PASS -> OK
-        Verdict.RECHECK -> WARN
-        Verdict.FAIL -> BAD
-        Verdict.NOT_READY -> IDLE
-    }
+private fun TypeRow(
+    type: DefectType,
+    score: Double,
+    verdict: Verdict,
+    model: DefectModel,
+    armed: Boolean,
+    onGood: () -> Unit,
+    onBad: () -> Unit,
+) {
     Row(
-        Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(10.dp))
-            .background(CARD)
-            .padding(14.dp),
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(9.dp)).background(CARD)
+            .padding(horizontal = 10.dp, vertical = 7.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Box(
-            Modifier.size(46.dp).clip(CircleShape).background(color),
-            contentAlignment = Alignment.Center
-        ) {
-            Text(
-                when (v) {
-                    Verdict.PASS -> "OK"
-                    Verdict.RECHECK -> "?"
-                    Verdict.FAIL -> "NG"
-                    Verdict.NOT_READY -> "–"
-                },
-                color = Color.Black, fontWeight = FontWeight.Bold, fontSize = 16.sp
-            )
-        }
-        Spacer(Modifier.width(14.dp))
+        Box(Modifier.size(9.dp).clip(CircleShape).background(colorOf(verdict)))
+        Spacer(Modifier.width(9.dp))
         Column(Modifier.weight(1f)) {
-            Text(v.label, fontSize = 26.sp, fontWeight = FontWeight.Bold, color = color)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    type.label, fontSize = 14.sp, fontWeight = FontWeight.Bold,
+                    color = Color.White, modifier = Modifier.weight(1f)
+                )
+                Text(
+                    "%.1f".format(score), fontSize = 14.sp,
+                    fontFamily = FontFamily.Monospace, color = colorOf(verdict)
+                )
+            }
             Text(
-                if (b.ready) "얼룩 지수 %.1f  (합격 %.1f 미만)".format(index, b.passLimit)
-                else "얼룩 지수 %.1f · 설정에서 양품을 %d개 이상 등록하세요"
-                    .format(index, Baseline.MIN_SAMPLES),
-                fontSize = 12.sp, color = DIM, fontFamily = FontFamily.Monospace
+                if (model.ready)
+                    "${verdict.label} · 양품 ${model.good.size}/불량 ${model.bad.size} · ${model.state.label}"
+                else
+                    "양품 ${model.good.size}/${DefectModel.MIN_GOOD} 등록됨 — ${type.hint}",
+                fontSize = 10.sp, color = DIM
             )
         }
+        Spacer(Modifier.width(8.dp))
+        SmallBtn("양품", OK, armed, onGood)
+        Spacer(Modifier.width(5.dp))
+        SmallBtn("불량", BAD, armed, onBad)
+    }
+}
+
+@Composable
+private fun SmallBtn(text: String, color: Color, enabled: Boolean, onClick: () -> Unit) {
+    OutlinedButton(
+        onClick = onClick,
+        enabled = enabled,
+        modifier = Modifier.height(34.dp),
+        shape = RoundedCornerShape(8.dp),
+        contentPadding = PaddingValues(horizontal = 10.dp),
+        colors = ButtonDefaults.outlinedButtonColors(contentColor = color)
+    ) { Text(text, fontSize = 12.sp, fontWeight = FontWeight.Bold) }
+}
+
+@Composable
+private fun RoundBtn(text: String, onClick: () -> Unit) {
+    Box(
+        Modifier.size(40.dp).clip(CircleShape).background(Color(0xB3000000)),
+        contentAlignment = Alignment.Center
+    ) {
+        TextButton(
+            onClick = onClick,
+            contentPadding = PaddingValues(0.dp),
+            modifier = Modifier.fillMaxSize()
+        ) { Text(text, fontSize = 18.sp, color = Color.White) }
     }
 }
 
@@ -537,23 +599,32 @@ private fun HelpOverlay(onClose: () -> Unit) {
         Modifier.fillMaxSize().background(Color(0xF0000000)).padding(20.dp),
         contentAlignment = Alignment.Center
     ) {
-        Column(verticalArrangement = Arrangement.spacedBy(11.dp)) {
+        Column(
+            Modifier.verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
             Text("사용 순서", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = Color.White)
             listOf(
-                "1. 프리즘을 지그에 놓고 조명을 켠다",
-                "2. 노란 사각형이 프리즘을 덮도록 화면을 눌러 옮기고 크기를 맞춘다",
-                "3. 화면이 잘 보이면 「현재 상태로 고정」을 누른다 — 이후 밝기가 변하지 않는다",
-                "4. 설정 → 양품 프리즘을 놓고 「양품으로 등록」을 5개 이상 반복한다",
-                "5. 이제 프리즘을 올릴 때마다 양품 / 재검 / 불량이 화면에 뜬다",
-                "6. 기록이 필요하면 「측정 저장」을 누른다",
+                "1. 폰을 암실 거치대에 고정하고 조명을 켠다",
+                "2. 프리즘을 손에 들고 노란 사각형 안에 들어오게 한다",
+                "3. 「현재 상태로 고정」 — 이후 밝기가 변하지 않는다",
+                "4. 「검사 시작」을 누르고 " + SWEEP_SECONDS + "초 동안 프리즘을 천천히 돌린다",
+                "5. 유형별 결과가 뜬다. 그 개체가 무엇인지 알고 있다면",
+                "   해당 유형 옆의 「양품」 또는 「불량」을 눌러 등록한다",
                 "",
-                "스크래치는 각도가 맞아야만 번쩍인다. 「스크래치 검사」를 누르고",
-                "6초 동안 프리즘을 손으로 천천히 돌리면, 그동안의 최고 점수로 판정한다.",
+                "양품 " + DefectModel.MIN_GOOD + "개부터 판정이 시작되고,",
+                "불량 " + DefectModel.MIN_BAD + "개를 더 넣으면 경계가 두 분포 사이로 옮겨간다.",
             ).forEach { Text(it, fontSize = 14.sp, color = Color.White, lineHeight = 20.sp) }
             Text(
-                "얼룩 지수 = 검사 영역에서 가장 밝은 부분이 정상면보다 얼마나 밝은가.\n" +
-                    "얼룩은 빛을 산란시켜 밝게 뜨므로 지수가 클수록 얼룩이 심하다.",
+                "왜 돌리면서 보는가 — 결함은 각도가 맞을 때만 빛난다. 스크래치는 특히 심해서 " +
+                    "한 각도로 고정해 찍으면 그냥 놓친다. 검사원이 손으로 기울여 보는 것과 같은 이유다. " +
+                    "앱은 그 " + SWEEP_SECONDS + "초 동안의 유형별 최고점으로 판정한다.",
                 fontSize = 12.sp, color = DIM, lineHeight = 18.sp
+            )
+            Text(
+                "「양품·불량이 겹침」이 뜨면 — 그 유형은 지금 조명으로 구분되지 않는다는 뜻이다. " +
+                    "샘플을 더 넣어도 안 갈리면 알고리즘이 아니라 조명을 바꿔야 한다.",
+                fontSize = 12.sp, color = WARN, lineHeight = 18.sp
             )
             Button(onClick = onClose, modifier = Modifier.fillMaxWidth().height(48.dp)) {
                 Text("닫기")
@@ -596,20 +667,53 @@ private fun fitRect(box: Size, fw: Int, fh: Int): FloatArray? {
 }
 
 private fun buildCsvRow(
-    note: String, s: RoiStats, b: Baseline, sb: Baseline, cam: AppliedCamera, m: ManualSettings,
-    roi: Roi, w: Int, h: Int, file: String, appVersion: String,
+    note: String, s: RoiStats, result: List<Double>?, models: Map<DefectType, DefectModel>,
+    cam: AppliedCamera, m: ManualSettings, roi: Roi, w: Int, h: Int,
+    file: String, appVersion: String,
 ): String {
     fun q(v: String) = "\"" + v.replace("\"", "\"\"") + "\""
-    return listOf(
-        q(Store.timestamp()), q(note), q(b.judge(s.stainIndex).label),
-        "%.3f".format(s.stainIndex), s.median, s.p99, s.max, "%.3f".format(s.mean),
-        "%.5f".format(s.brightArea), "%.5f".format(s.satRatio), "%.3f".format(s.focus),
-        "%.3f".format(s.scratchScore), "%.3f".format(s.elongation),
-        b.n, "%.3f".format(b.mean), "%.3f".format(b.sd),
-        "%.3f".format(b.passLimit), "%.3f".format(b.failLimit),
-        sb.n, "%.3f".format(sb.passLimit),
-        cam.iso ?: "", cam.exposureNs ?: "", cam.focusDiopter ?: "", if (m.locked) 1 else 0,
-        "%.4f".format(roi.cx), "%.4f".format(roi.cy), "%.4f".format(roi.size),
-        w, h, q(file), q(appVersion)
-    ).joinToString(",")
+    val scores = result ?: TYPES.map { it.score(s) }
+    val verdicts = TYPES.mapIndexed { i, t -> models.getValue(t).judge(scores[i]) }
+    val overall = when {
+        verdicts.any { it == Verdict.FAIL } -> Verdict.FAIL
+        verdicts.any { it == Verdict.RECHECK } -> Verdict.RECHECK
+        verdicts.any { it == Verdict.PASS } -> Verdict.PASS
+        else -> Verdict.NOT_READY
+    }
+    val cells = ArrayList<Any>()
+    cells.add(q(Store.timestamp()))
+    cells.add(q(note))
+    cells.add(q(if (result != null) "sweep" else "live"))
+    cells.add(q(overall.label))
+    TYPES.forEachIndexed { i, t ->
+        val mm = models.getValue(t)
+        cells.add("%.3f".format(scores[i]))
+        cells.add(q(verdicts[i].label))
+        cells.add(mm.good.size)
+        cells.add(mm.bad.size)
+        cells.add(mm.band?.let { "%.3f".format(it.pass) } ?: "")
+        cells.add(mm.band?.let { "%.3f".format(it.fail) } ?: "")
+    }
+    cells.add(s.median)
+    cells.add(s.p99)
+    cells.add(s.max)
+    cells.add("%.3f".format(s.contrast))
+    cells.add("%.3f".format(s.darkContrast))
+    cells.add("%.5f".format(s.brightArea))
+    cells.add("%.3f".format(s.linearity))
+    cells.add("%.3f".format(s.spot))
+    cells.add("%.5f".format(s.satRatio))
+    cells.add("%.3f".format(s.focus))
+    cells.add(cam.iso ?: "")
+    cells.add(cam.exposureNs ?: "")
+    cells.add(cam.focusDiopter ?: "")
+    cells.add(if (m.locked) 1 else 0)
+    cells.add("%.4f".format(roi.cx))
+    cells.add("%.4f".format(roi.cy))
+    cells.add("%.4f".format(roi.size))
+    cells.add(w)
+    cells.add(h)
+    cells.add(q(file))
+    cells.add(q(appVersion))
+    return cells.joinToString(",")
 }
