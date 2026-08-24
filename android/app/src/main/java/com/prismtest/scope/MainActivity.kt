@@ -37,7 +37,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import kotlinx.coroutines.delay
 import java.util.concurrent.Executors
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 /** 스윕 시간. 한 바퀴 돌리기에 충분하면서 지루하지 않은 길이. */
@@ -154,7 +156,7 @@ private fun Inspect(controller: CameraController) {
                         if (s.scratchScore > sweepMax) sweepMax = s.scratchScore
                         // 프레임 간 밝기 변화로 "실제로 돌리고 있는지"를 본다.
                         // 가만히 두면 변화가 0에 가까워 스윕이 성립하지 않는다.
-                        if (lastMean >= 0) sweepMotion += kotlin.math.abs(s.mean - lastMean)
+                        if (lastMean >= 0) sweepMotion += abs(s.mean - lastMean)
                         lastMean = s.mean
                     }
                     if (pendingRegister) {
@@ -189,7 +191,7 @@ private fun Inspect(controller: CameraController) {
         sweepMax = 0.0; sweepMotion = 0.0; lastMean = -1.0; sweepResult = null
         for (i in SWEEP_SECONDS downTo 1) {
             sweepLeft = i
-            kotlinx.coroutines.delay(1000)
+            delay(1000)
         }
         sweepLeft = 0
         sweeping = false
@@ -307,8 +309,10 @@ private fun Inspect(controller: CameraController) {
             sweepResult?.let { r ->
                 val v = scratchBase.judge(r)
                 val c = when (v) {
-                    Verdict.PASS -> OK; Verdict.RECHECK -> WARN
-                    Verdict.FAIL -> BAD; Verdict.NOT_READY -> IDLE
+                    Verdict.PASS -> OK
+                    Verdict.RECHECK -> WARN
+                    Verdict.FAIL -> BAD
+                    Verdict.NOT_READY -> IDLE
                 }
                 Column(
                     Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp))
@@ -349,7 +353,8 @@ private fun Inspect(controller: CameraController) {
                 )
             ) {
                 Text(
-                    if (sweeping) "검사 중… $sweepLeft 초" else "스크래치 검사 ($SWEEP_SECONDS초 · 손으로 돌리기)",
+                    if (sweeping) "검사 중… $sweepLeft 초"
+                    else "스크래치 검사 (${SWEEP_SECONDS}초 · 손으로 돌리기)",
                     fontSize = 15.sp
                 )
             }

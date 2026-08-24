@@ -51,7 +51,16 @@ jobs:
           RELEASE_KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
           RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
           RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
-        run: ./gradlew --no-daemon --stacktrace assembleRelease bundleRelease
+        # --stacktrace 를 쓰지 않는다. 실패 시 Gradle 스택 트레이스 수백 줄이
+        # 로그 끝을 채워 정작 필요한 컴파일 오류(e: file:...)를 밀어내 버린다.
+        run: |
+          set -o pipefail
+          ./gradlew --no-daemon --console=plain assembleRelease bundleRelease 2>&1 \
+            | tee build.log || {
+              echo "───────── 컴파일 오류만 다시 ─────────"
+              grep -E "^(e|w): |error:" build.log | head -60
+              exit 1
+            }
 
       - name: Collect APK and AAB
         run: |
