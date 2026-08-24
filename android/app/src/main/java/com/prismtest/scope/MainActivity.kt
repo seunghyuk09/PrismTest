@@ -48,6 +48,17 @@ private const val SWEEP_SECONDS = 8
 /** 검사 중 최소 밝기 변화 총량. 이보다 작으면 각도를 거의 안 바꾼 것이다. */
 private const val MIN_SWEEP_MOTION = 80.0
 
+/**
+ * 암시야가 성립했는지 보는 기준 — 검사 영역의 중앙값(정상면 밝기).
+ *
+ * 이 앱의 모든 점수는 "어두운 배경 위에 결함만 밝게 뜬다"를 전제로 한다.
+ * 전제가 깨진 화면에서 나온 숫자는 프리즘이 아니라 방을 잰 값이다.
+ * 그런 값이 기준선에 들어가면 이후 판정이 통째로 무의미해지므로 등록을 막는다.
+ */
+private const val DARK_OK = 20
+private const val DARK_LIMIT = 45
+private const val SAT_LIMIT = 0.02
+
 private val TYPES = DefectType.values()
 
 private val OK = Color(0xFF3DBE63)
@@ -135,6 +146,9 @@ private fun Inspect(controller: CameraController) {
     var result by remember { mutableStateOf<List<Double>?>(null) }
     var motion by remember { mutableStateOf(0.0) }
     var lastMean by remember { mutableStateOf(-1.0) }
+    // 검사 8초 동안 가장 나빴던 화면 상태. 한 프레임이라도 방이 찍혔으면 그 결과는 못 쓴다.
+    var sweepMedian by remember { mutableIntStateOf(0) }
+    var sweepSat by remember { mutableStateOf(0.0) }
 
     var note by remember { mutableStateOf("") }
     var msg by remember { mutableStateOf("") }
@@ -150,7 +164,9 @@ private fun Inspect(controller: CameraController) {
     }
 
     val previewView = remember {
-        PreviewView(context).apply { scaleType = PreviewView.ScaleType.FIT_CENTER }
+        // FIT 으로 두면 세로 영상이 가로로 납작한 프리뷰 칸에 맞춰 축소되어
+        // 프리즘이 손톱만 하게 보인다. 가운데를 잘라 채우는 편이 조준에 낫다.
+        PreviewView(context).apply { scaleType = PreviewView.ScaleType.FILL_CENTER }
     }
 
     LaunchedEffect(Unit) {
@@ -158,8 +174,11 @@ private fun Inspect(controller: CameraController) {
             lifecycleOwner, previewView, settings,
             onFrame = { image ->
                 try {
-                    frameW = image.width
-                    frameH = image.height
+                    // 화면에 서는 방향 기준의 크기. 오버레이 좌표는 이걸로 맞춘다.
+                    val rot = ((image.imageInfo.rotationDegrees % 360) + 360) % 360
+                    val swap = rot == 90 || rot == 270
+                    frameW = if (swap) image.height else image.width
+                    frameH = if (swap) image.width else image.height
                     val s = Stats.analyze(image, roiRef.value)
                     live = s
                     applied = controller.applied
@@ -183,6 +202,8 @@ private fun Inspect(controller: CameraController) {
                         // 프레임 간 밝기 변화로 "실제로 돌리고 있는지"를 본다.
                         if (lastMean >= 0) motion += abs(s.mean - lastMean)
                         lastMean = s.mean
+                        if (s.median > sweepMedian) sweepMedian = s.median
+                        if (s.satRatio > sweepSat) sweepSat = s.satRatio
                     }
 
                     if (pendingSave) {
@@ -209,6 +230,8 @@ private fun Inspect(controller: CameraController) {
         peaks = List(TYPES.size) { 0.0 }
         motion = 0.0
         lastMean = -1.0
+        sweepMedian = 0
+        sweepSat = 0.0
         result = null
         msg = ""
         for (i in SWEEP_SECONDS downTo 1) {
@@ -240,8 +263,21 @@ private fun Inspect(controller: CameraController) {
         else -> Verdict.NOT_READY
     }
 
+    // 검사 결과를 믿을 수 있는가. 등록 허용 여부가 여기에 걸린다.
+    val badScene: String? = when {
+        result == null -> null
+        sweepMedian > DARK_LIMIT ->
+            "배경이 밝습니다 (정상면 $sweepMedian) — 프리즘이 아니라 주변을 재고 있습니다"
+        sweepSat > SAT_LIMIT ->
+            "빛이 하얗게 뭉갰습니다 — 조명 각도를 낮추세요"
+        else -> null
+    }
+    val armed = result != null && !sweeping && badScene == null
+
     val tooDark = live.median < 3 && live.p99 < 6
-    val glare = live.satRatio > 0.01
+    val liveBright = live.median > DARK_LIMIT
+    val liveDim = live.median > DARK_OK && !liveBright
+    val glare = live.satRatio > SAT_LIMIT
 
     Column(Modifier.fillMaxSize()) {
 
@@ -322,7 +358,8 @@ private fun Inspect(controller: CameraController) {
                     )
                     Text(
                         "ISO ${applied.iso ?: "-"} · " +
-                            (applied.exposureNs?.let { "%.1f ms".format(it / 1e6) } ?: "-"),
+                            (applied.exposureNs?.let { "%.1f ms".format(it / 1e6) } ?: "-") +
+                            " · %.1f×".format(settings.zoom),
                         fontSize = 11.sp, color = DIM, fontFamily = FontFamily.Monospace
                     )
                 }
@@ -366,15 +403,23 @@ private fun Inspect(controller: CameraController) {
                 )
             }
 
-            // 종합 판정
-            if (overall != null) {
+            // 종합 판정 — 화면이 성립하지 않으면 판정 대신 그 사실을 띄운다
+            if (badScene != null) {
+                Column(
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp))
+                        .background(BAD).padding(horizontal = 14.dp, vertical = 8.dp)
+                ) {
+                    Text("측정 불가", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = Color.Black)
+                    Text(badScene, fontSize = 12.sp, color = Color.Black)
+                }
+            } else if (overall != null) {
                 Row(
                     Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp))
                         .background(colorOf(overall)).padding(horizontal = 14.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        overall.label, fontSize = 22.sp, fontWeight = FontWeight.Bold,
+                        overall.label, fontSize = 20.sp, fontWeight = FontWeight.Bold,
                         color = Color.Black, modifier = Modifier.weight(1f)
                     )
                     if (motion < MIN_SWEEP_MOTION) {
@@ -385,32 +430,47 @@ private fun Inspect(controller: CameraController) {
 
             val warn = when {
                 tooDark -> "화면이 너무 어둡습니다. 조명을 켜세요"
+                liveBright -> "배경이 밝습니다 (정상면 ${live.median}) — 암실이 필요합니다"
                 glare -> "너무 밝아 하얗게 뭉개집니다. 각도를 조정하세요"
+                liveDim -> "배경이 조금 밝습니다 (정상면 ${live.median}) — 8 이하가 목표"
                 else -> null
             }
-            if (warn != null) Text("⚠ $warn", fontSize = 12.sp, color = WARN)
+            if (warn != null) {
+                Text("⚠ $warn", fontSize = 12.sp, color = if (liveBright) BAD else WARN)
+            }
 
-            // 유형별 결과 + 등록
-            TYPES.forEachIndexed { i, type ->
-                TypeRow(
-                    type = type,
-                    score = shown[i],
-                    verdict = verdicts[i],
-                    model = models.getValue(type),
-                    armed = result != null && !sweeping,
-                    onGood = {
-                        val m = models.getValue(type).plusGood(shown[i])
-                        DefectModel.save(context, type, m)
-                        models = models + (type to m)
-                        msg = "${type.label} 양품 ${m.good.size}개 등록"
-                    },
-                    onBad = {
-                        val m = models.getValue(type).plusBad(shown[i])
-                        DefectModel.save(context, type, m)
-                        models = models + (type to m)
-                        msg = "${type.label} 불량 ${m.bad.size}개 등록"
-                    },
-                )
+            // 유형별 결과 + 등록. 2×2 로 두면 카메라에 줄 높이가 남는다.
+            for (row in 0 until (TYPES.size + 1) / 2) {
+                Row(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                    for (col in 0 until 2) {
+                        val i = row * 2 + col
+                        if (i >= TYPES.size) {
+                            Spacer(Modifier.weight(1f))
+                            continue
+                        }
+                        val type = TYPES[i]
+                        TypeCard(
+                            type = type,
+                            score = shown[i],
+                            verdict = verdicts[i],
+                            model = models.getValue(type),
+                            armed = armed,
+                            modifier = Modifier.weight(1f),
+                            onGood = {
+                                val m = models.getValue(type).plusGood(shown[i])
+                                DefectModel.save(context, type, m)
+                                models = models + (type to m)
+                                msg = "${type.label} 양품 ${m.good.size}개 등록"
+                            },
+                            onBad = {
+                                val m = models.getValue(type).plusBad(shown[i])
+                                DefectModel.save(context, type, m)
+                                models = models + (type to m)
+                                msg = "${type.label} 불량 ${m.bad.size}개 등록"
+                            },
+                        )
+                    }
+                }
             }
 
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -538,56 +598,56 @@ private fun Inspect(controller: CameraController) {
 /* ───────────── 부품 ───────────── */
 
 @Composable
-private fun TypeRow(
+private fun TypeCard(
     type: DefectType,
     score: Double,
     verdict: Verdict,
     model: DefectModel,
     armed: Boolean,
+    modifier: Modifier = Modifier,
     onGood: () -> Unit,
     onBad: () -> Unit,
 ) {
-    Row(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(9.dp)).background(CARD)
-            .padding(horizontal = 10.dp, vertical = 7.dp),
-        verticalAlignment = Alignment.CenterVertically
+    Column(
+        modifier.clip(RoundedCornerShape(9.dp)).background(CARD)
+            .padding(horizontal = 9.dp, vertical = 7.dp),
+        verticalArrangement = Arrangement.spacedBy(5.dp)
     ) {
-        Box(Modifier.size(9.dp).clip(CircleShape).background(colorOf(verdict)))
-        Spacer(Modifier.width(9.dp))
-        Column(Modifier.weight(1f)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    type.label, fontSize = 14.sp, fontWeight = FontWeight.Bold,
-                    color = Color.White, modifier = Modifier.weight(1f)
-                )
-                Text(
-                    "%.1f".format(score), fontSize = 14.sp,
-                    fontFamily = FontFamily.Monospace, color = colorOf(verdict)
-                )
-            }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(8.dp).clip(CircleShape).background(colorOf(verdict)))
+            Spacer(Modifier.width(7.dp))
             Text(
-                if (model.ready)
-                    "${verdict.label} · 양품 ${model.good.size}/불량 ${model.bad.size} · ${model.state.label}"
-                else
-                    "양품 ${model.good.size}/${DefectModel.MIN_GOOD} 등록됨 — ${type.hint}",
-                fontSize = 10.sp, color = DIM
+                type.label, fontSize = 13.sp, fontWeight = FontWeight.Bold,
+                color = Color.White, modifier = Modifier.weight(1f)
+            )
+            Text(
+                "%.1f".format(score), fontSize = 14.sp,
+                fontFamily = FontFamily.Monospace, color = colorOf(verdict)
             )
         }
-        Spacer(Modifier.width(8.dp))
-        SmallBtn("양품", OK, armed, onGood)
-        Spacer(Modifier.width(5.dp))
-        SmallBtn("불량", BAD, armed, onBad)
+        Text(
+            if (model.ready) "${verdict.label} · 양 ${model.good.size} / 불 ${model.bad.size}"
+            else "양품 ${model.good.size}/${DefectModel.MIN_GOOD}",
+            fontSize = 10.sp, color = DIM, fontFamily = FontFamily.Monospace
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+            SmallBtn("양품", OK, armed, Modifier.weight(1f), onGood)
+            SmallBtn("불량", BAD, armed, Modifier.weight(1f), onBad)
+        }
     }
 }
 
 @Composable
-private fun SmallBtn(text: String, color: Color, enabled: Boolean, onClick: () -> Unit) {
+private fun SmallBtn(
+    text: String, color: Color, enabled: Boolean,
+    modifier: Modifier = Modifier, onClick: () -> Unit,
+) {
     OutlinedButton(
         onClick = onClick,
         enabled = enabled,
-        modifier = Modifier.height(34.dp),
+        modifier = modifier.height(34.dp),
         shape = RoundedCornerShape(8.dp),
-        contentPadding = PaddingValues(horizontal = 10.dp),
+        contentPadding = PaddingValues(horizontal = 4.dp),
         colors = ButtonDefaults.outlinedButtonColors(contentColor = color)
     ) { Text(text, fontSize = 12.sp, fontWeight = FontWeight.Bold) }
 }
@@ -665,18 +725,22 @@ private fun Sld(
 
 /* ───────────── 좌표 ───────────── */
 
-/** FIT_CENTER 로 표시된 프레임의 화면상 위치. [left, top, width, height]. */
-private fun fitRect(box: Size, fw: Int, fh: Int): FloatArray? {
-    if (box.width <= 0f || box.height <= 0f || fw <= 0 || fh <= 0) return null
-    val frameAspect = if (box.width < box.height) fh.toFloat() / fw else fw.toFloat() / fh
-    val boxAspect = box.width / box.height
-    return if (boxAspect > frameAspect) {
-        val w = box.height * frameAspect
-        floatArrayOf((box.width - w) / 2f, 0f, w, box.height)
-    } else {
-        val h = box.width / frameAspect
-        floatArrayOf(0f, (box.height - h) / 2f, box.width, h)
-    }
+/**
+ * FILL_CENTER 로 표시된 프레임의 화면상 위치. [left, top, width, height].
+ *
+ * 상자를 **덮도록** 확대하므로 결과가 상자 밖으로 넘칠 수 있고, 그 값이 맞다 —
+ * 오버레이는 Canvas 가 알아서 잘라 그린다.
+ *
+ * 화면비를 상자 모양으로 추측하면 안 된다. 프리뷰 상자는 가로로 넓은데 영상은
+ * 세로로 서 있는 경우가 실제로 나오고, 그때 사각형이 측정 영역보다 크게 그려진다.
+ * 회전을 반영한 **표시 해상도**를 그대로 받는다.
+ */
+private fun fitRect(box: Size, dispW: Int, dispH: Int): FloatArray? {
+    if (box.width <= 0f || box.height <= 0f || dispW <= 0 || dispH <= 0) return null
+    val scale = maxOf(box.width / dispW, box.height / dispH)
+    val w = dispW * scale
+    val h = dispH * scale
+    return floatArrayOf((box.width - w) / 2f, (box.height - h) / 2f, w, h)
 }
 
 private fun buildCsvRow(
