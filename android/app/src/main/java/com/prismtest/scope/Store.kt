@@ -41,7 +41,7 @@ object Store {
             listOf(
                 "median", "p99", "max", "contrast", "darkContrast",
                 "brightArea", "linearity", "spot", "satRatio", "focus",
-                "iso", "exposureNs", "focusDiopter", "locked",
+                "iso", "exposureNs", "focusDiopter", "locked", "zoom",
                 "roi_cx", "roi_cy", "roi_size",
                 "frameW", "frameH", "imageFile", "appVersion",
             )

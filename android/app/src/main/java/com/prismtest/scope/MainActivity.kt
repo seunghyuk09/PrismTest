@@ -479,6 +479,17 @@ private fun Inspect(controller: CameraController) {
 
                 HorizontalDivider(color = Color(0xFF262E33))
 
+                Text("배율 — 프리즘이 화면을 채울수록 정확해진다", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                Sld(
+                    "배율", "%.1f×".format(settings.zoom), settings.zoom,
+                    (caps.zoomRange?.lower ?: 1f)..(caps.zoomRange?.upper ?: 8f)
+                ) {
+                    settings = settings.copy(zoom = it)
+                    controller.updateManual(settings)
+                }
+
+                HorizontalDivider(color = Color(0xFF262E33))
+
                 Text("카메라 수동 조정 — 고정 상태에서만 반영", fontWeight = FontWeight.Bold, fontSize = 14.sp)
                 val isoLo = caps.isoRange?.lower ?: 50
                 val isoHi = caps.isoRange?.upper ?: 800
@@ -514,6 +525,8 @@ private fun Inspect(controller: CameraController) {
                 Text(
                     "카메라 ${caps.cameraId} · ${caps.hardwareLevelName}" +
                         (caps.minFocusMm?.let { " · 최소 초점거리 %.0f mm".format(it) } ?: "") +
+                        "\n분석 해상도 ${caps.analysisWidth}×${caps.analysisHeight}" +
+                        " · 검사 영역 ${(roi.size * caps.analysisHeight).roundToInt()} px" +
                         "\n이미지 Pictures/PrismScope · 로그 Documents/PrismScope\n앱 버전 $appVersion",
                     fontSize = 11.sp, color = Color(0xFF67737A), fontFamily = FontFamily.Monospace
                 )
@@ -708,6 +721,7 @@ private fun buildCsvRow(
     cells.add(cam.exposureNs ?: "")
     cells.add(cam.focusDiopter ?: "")
     cells.add(if (m.locked) 1 else 0)
+    cells.add("%.2f".format(m.zoom))
     cells.add("%.4f".format(roi.cx))
     cells.add("%.4f".format(roi.cy))
     cells.add("%.4f".format(roi.size))

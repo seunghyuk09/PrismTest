@@ -9,6 +9,7 @@ import android.hardware.camera2.TotalCaptureResult
 import android.hardware.camera2.params.ColorSpaceTransform
 import android.hardware.camera2.params.RggbChannelVector
 import android.util.Range
+import android.util.Size
 import androidx.camera.camera2.interop.Camera2CameraControl
 import androidx.camera.camera2.interop.Camera2CameraInfo
 import androidx.camera.camera2.interop.Camera2Interop
@@ -21,6 +22,7 @@ import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
 import androidx.camera.core.resolutionselector.AspectRatioStrategy
 import androidx.camera.core.resolutionselector.ResolutionSelector
+import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
@@ -51,6 +53,10 @@ data class CameraCaps(
     val isoRange: Range<Int>? = null,
     val exposureRange: Range<Long>? = null,
     val minFocusDistance: Float = 0f,
+    val zoomRange: Range<Float>? = null,
+    /** 분석 버퍼의 실제 해상도. 결함 크기가 몇 화소로 잡히는지를 결정한다. */
+    val analysisWidth: Int = 0,
+    val analysisHeight: Int = 0,
     val hardwareLevel: Int = -1,
     val supportsManualSensor: Boolean = false,
     val supportsManualPostProcessing: Boolean = false,
@@ -81,6 +87,14 @@ data class ManualSettings(
     val iso: Int = 100,
     val exposureNs: Long = 16_000_000L,
     val focusDiopter: Float = 4.0f,
+    /**
+     * 광학 배율. 프리즘이 화면에서 차지하는 비율을 결정한다.
+     *
+     * 폰 광각은 화각이 넓어 초점이 맞는 최단 거리에서도 프리즘이 화면의 10%
+     * 남짓밖에 안 된다. 그만큼 결함에 배정되는 화소가 줄어든다. 렌즈를 더
+     * 들이대는 대신 배율을 올리는 편이 초점 여유를 지키면서 화소를 벌 수 있다.
+     */
+    val zoom: Float = 2.0f,
 )
 
 /**
@@ -155,8 +169,21 @@ class CameraController(
             val preview = previewBuilder.build()
             preview.setSurfaceProvider(previewView.surfaceProvider)
 
+            // 분석 버퍼는 기본값이 640×480 이라 프리즘이 화면의 일부만 차지하면
+            // 결함에 배정되는 화소가 몇 개 남지 않는다. 1280×960 을 요청한다.
+            // ROI 안만 step=2 로 훑으므로 이 정도는 프레임률에 부담이 되지 않는다.
+            val analysisRes = ResolutionSelector.Builder()
+                .setAspectRatioStrategy(AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY)
+                .setResolutionStrategy(
+                    ResolutionStrategy(
+                        Size(1280, 960),
+                        ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER
+                    )
+                )
+                .build()
+
             val analysis = ImageAnalysis.Builder()
-                .setResolutionSelector(resSel)
+                .setResolutionSelector(analysisRes)
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                 .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_YUV_420_888)
                 .build()
@@ -166,7 +193,8 @@ class CameraController(
                 lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, preview, analysis
             )
             camera = cam
-            caps = readCaps(cam)
+            caps = readCaps(cam, analysis)
+            updateManual(settings)
             onReady(caps)
         }, ContextCompat.getMainExecutor(context))
     }
@@ -199,6 +227,13 @@ class CameraController(
             b.setCaptureRequestOption(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_AUTO)
         }
         Camera2CameraControl.from(cam.cameraControl).captureRequestOptions = b.build()
+
+        // 배율은 CaptureRequest 가 아니라 CameraControl 로 건다. 프리뷰와 분석
+        // 버퍼에 함께 걸리므로 화면에서 본 크기가 그대로 측정 크기가 된다.
+        val zr = caps.zoomRange
+        cam.cameraControl.setZoomRatio(
+            if (zr != null) s.zoom.coerceIn(zr.lower, zr.upper) else s.zoom
+        )
     }
 
     /**
@@ -250,8 +285,10 @@ class CameraController(
         ext.setCaptureRequestOption(CaptureRequest.EDGE_MODE, CaptureRequest.EDGE_MODE_OFF)
     }
 
-    private fun readCaps(cam: Camera): CameraCaps {
+    private fun readCaps(cam: Camera, analysis: ImageAnalysis): CameraCaps {
         val info = Camera2CameraInfo.from(cam.cameraInfo)
+        val zoom = cam.cameraInfo.zoomState.value
+        val res = analysis.resolutionInfo?.resolution
         val level = info.getCameraCharacteristic(
             CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL
         ) ?: -1
@@ -265,6 +302,9 @@ class CameraController(
             minFocusDistance = info.getCameraCharacteristic(
                 CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE
             ) ?: 0f,
+            zoomRange = zoom?.let { Range(it.minZoomRatio, it.maxZoomRatio) },
+            analysisWidth = res?.width ?: 0,
+            analysisHeight = res?.height ?: 0,
             hardwareLevel = level,
             supportsManualSensor = avail.contains(
                 CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_SENSOR
