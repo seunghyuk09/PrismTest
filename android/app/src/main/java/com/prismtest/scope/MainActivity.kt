@@ -422,12 +422,26 @@ private fun Inspect(controller: CameraController) {
                         fontSize = 12.sp, fontWeight = FontWeight.Bold,
                         color = if (settings.locked) OK else WARN
                     )
-                    Text(
-                        "ISO ${applied.iso ?: "-"} · " +
-                            (applied.exposureNs?.let { "%.1f ms".format(it / 1e6) } ?: "-") +
-                            " · %.1f×".format(settings.zoom),
-                        fontSize = 11.sp, color = DIM, fontFamily = FontFamily.Monospace
-                    )
+                    // 「배경」은 암실을 만드는 동안의 계기판이다. 이 값이 8 이하로
+                    // 내려가야 나머지가 성립하므로, 경고가 없을 때도 늘 보여준다.
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "ISO ${applied.iso ?: "-"} · " +
+                                (applied.exposureNs?.let { "%.1f ms".format(it / 1e6) } ?: "-") +
+                                " · %.1f×".format(settings.zoom) + "  ",
+                            fontSize = 11.sp, color = DIM, fontFamily = FontFamily.Monospace
+                        )
+                        Text(
+                            "배경 ${live.median}",
+                            fontSize = 11.sp, fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace,
+                            color = when {
+                                live.median <= 8 -> OK
+                                live.median <= DARK_OK -> WARN
+                                else -> BAD
+                            }
+                        )
+                    }
                 }
                 if (settings.locked) {
                     OutlinedButton(
