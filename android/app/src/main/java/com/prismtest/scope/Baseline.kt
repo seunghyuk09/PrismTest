@@ -60,18 +60,21 @@ data class Baseline(
         const val MIN_SAMPLES = 5
 
         private const val PREF = "prismscope"
-        private const val KEY = "baseline_samples"
 
-        fun load(context: Context): Baseline {
+        /** 얼룩과 스크래치는 척도가 달라 기준선을 따로 둔다. */
+        const val KIND_STAIN = "stain"
+        const val KIND_SCRATCH = "scratch"
+
+        fun load(context: Context, kind: String): Baseline {
             val raw = context.getSharedPreferences(PREF, Context.MODE_PRIVATE)
-                .getString(KEY, "") ?: ""
+                .getString("baseline_$kind", "") ?: ""
             val list = raw.split(",").mapNotNull { it.trim().toDoubleOrNull() }
             return Baseline(list)
         }
 
-        fun save(context: Context, b: Baseline) {
+        fun save(context: Context, kind: String, b: Baseline) {
             context.getSharedPreferences(PREF, Context.MODE_PRIVATE).edit()
-                .putString(KEY, b.samples.joinToString(",")).apply()
+                .putString("baseline_$kind", b.samples.joinToString(",")).apply()
         }
     }
 }

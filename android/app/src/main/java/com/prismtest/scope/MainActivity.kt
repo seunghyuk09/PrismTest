@@ -40,6 +40,11 @@ import androidx.core.content.ContextCompat
 import java.util.concurrent.Executors
 import kotlin.math.roundToInt
 
+/** 스윕 시간. 한 바퀴 돌리기에 충분하면서 지루하지 않은 길이. */
+private const val SWEEP_SECONDS = 6
+/** 스윕 중 최소 밝기 변화 총량. 이보다 작으면 각도를 거의 안 바꾼 것이다. */
+private const val MIN_SWEEP_MOTION = 60.0
+
 private val OK = Color(0xFF3DBE63)
 private val WARN = Color(0xFFE8A93B)
 private val BAD = Color(0xFFE04B3F)
@@ -106,7 +111,16 @@ private fun Inspect(controller: CameraController) {
     var frameW by remember { mutableIntStateOf(0) }
     var frameH by remember { mutableIntStateOf(0) }
 
-    var baseline by remember { mutableStateOf(Baseline.load(context)) }
+    var baseline by remember { mutableStateOf(Baseline.load(context, Baseline.KIND_STAIN)) }
+    var scratchBase by remember { mutableStateOf(Baseline.load(context, Baseline.KIND_SCRATCH)) }
+
+    // 스크래치 스윕 — 손으로 각도를 바꾸는 동안 최댓값을 잡는다.
+    var sweeping by remember { mutableStateOf(false) }
+    var sweepLeft by remember { mutableIntStateOf(0) }
+    var sweepMax by remember { mutableStateOf(0.0) }
+    var sweepMotion by remember { mutableStateOf(0.0) }
+    var sweepResult by remember { mutableStateOf<Double?>(null) }
+    var lastMean by remember { mutableStateOf(-1.0) }
     var note by remember { mutableStateOf("") }
     var msg by remember { mutableStateOf("") }
     var pendingSave by remember { mutableStateOf(false) }
@@ -135,12 +149,20 @@ private fun Inspect(controller: CameraController) {
                     val s = Stats.analyze(image, roiRef.value)
                     stats = s
                     applied = controller.applied
+
+                    if (sweeping) {
+                        if (s.scratchScore > sweepMax) sweepMax = s.scratchScore
+                        // 프레임 간 밝기 변화로 "실제로 돌리고 있는지"를 본다.
+                        // 가만히 두면 변화가 0에 가까워 스윕이 성립하지 않는다.
+                        if (lastMean >= 0) sweepMotion += kotlin.math.abs(s.mean - lastMean)
+                        lastMean = s.mean
+                    }
                     if (pendingRegister) {
                         pendingRegister = false
                         val b = baseline.plus(s.stainIndex)
                         baseline = b
-                        Baseline.save(context, b)
-                        msg = "양품 ${b.n}개 등록됨" +
+                        Baseline.save(context, Baseline.KIND_STAIN, b)
+                        msg = "얼룩 기준 · 양품 ${b.n}개 등록됨" +
                             if (b.ready) "" else " (${Baseline.MIN_SAMPLES}개 이상 필요)"
                     }
                     if (pendingSave) {
@@ -148,7 +170,7 @@ private fun Inspect(controller: CameraController) {
                         val file = Store.saveFrame(context, image, "cap")
                         Store.appendCsv(
                             context,
-                            buildCsvRow(note, s, baseline, controller.applied, settings,
+                            buildCsvRow(note, s, baseline, scratchBase, controller.applied, settings,
                                 roiRef.value, image.width, image.height, file ?: "", appVersion)
                         )
                         msg = if (file != null) "저장됨" else "저장 실패"
@@ -159,6 +181,19 @@ private fun Inspect(controller: CameraController) {
             },
             onReady = { caps = it }
         )
+    }
+
+    // 스윕 타이머. 프레임 콜백이 아니라 UI 쪽에서 시간을 센다.
+    LaunchedEffect(sweeping) {
+        if (!sweeping) return@LaunchedEffect
+        sweepMax = 0.0; sweepMotion = 0.0; lastMean = -1.0; sweepResult = null
+        for (i in SWEEP_SECONDS downTo 1) {
+            sweepLeft = i
+            kotlinx.coroutines.delay(1000)
+        }
+        sweepLeft = 0
+        sweeping = false
+        sweepResult = sweepMax
     }
 
     val labelPaint = remember {
@@ -201,6 +236,22 @@ private fun Inspect(controller: CameraController) {
                 val top = rect[1] + roi.cy * rect[3] - side / 2
                 drawRect(FRAME, Offset(left, top), Size(side, side), style = Stroke(6f))
                 drawContext.canvas.nativeCanvas.drawText("검사 영역", left + 6f, top - 14f, labelPaint)
+            }
+            if (sweeping) {
+                Box(
+                    Modifier.align(Alignment.TopCenter).padding(12.dp)
+                        .clip(RoundedCornerShape(10.dp)).background(Color(0xE6000000))
+                        .padding(horizontal = 16.dp, vertical = 12.dp)
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text("프리즘을 천천히 돌리세요", fontSize = 16.sp,
+                            fontWeight = FontWeight.Bold, color = Color.White)
+                        Text("$sweepLeft 초", fontSize = 30.sp, fontWeight = FontWeight.Bold,
+                            color = FRAME, fontFamily = FontFamily.Monospace)
+                        Text("최고 %.1f".format(sweepMax), fontSize = 13.sp,
+                            color = DIM, fontFamily = FontFamily.Monospace)
+                    }
+                }
             }
             if (showHelp) HelpOverlay { showHelp = false }
         }
@@ -251,6 +302,56 @@ private fun Inspect(controller: CameraController) {
                         colors = ButtonDefaults.buttonColors(containerColor = OK, contentColor = Color.Black)
                     ) { Text("현재 상태로 고정", fontSize = 13.sp, fontWeight = FontWeight.Bold) }
                 }
+            }
+
+            sweepResult?.let { r ->
+                val v = scratchBase.judge(r)
+                val c = when (v) {
+                    Verdict.PASS -> OK; Verdict.RECHECK -> WARN
+                    Verdict.FAIL -> BAD; Verdict.NOT_READY -> IDLE
+                }
+                Column(
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp))
+                        .background(CARD).padding(12.dp)
+                ) {
+                    Text("스크래치 검사 결과 — ${v.label}", fontSize = 15.sp,
+                        fontWeight = FontWeight.Bold, color = c)
+                    Text(
+                        if (scratchBase.ready) "최고 점수 %.1f (합격 %.1f 미만)".format(r, scratchBase.passLimit)
+                        else "최고 점수 %.1f · 설정에서 양품 스윕을 %d회 이상 등록하세요"
+                            .format(r, Baseline.MIN_SAMPLES),
+                        fontSize = 12.sp, color = DIM, fontFamily = FontFamily.Monospace
+                    )
+                    if (sweepMotion < MIN_SWEEP_MOTION) {
+                        Text("⚠ 각도 변화가 적습니다. 더 크게 돌려 다시 재세요",
+                            fontSize = 12.sp, color = WARN)
+                    }
+                    Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(onClick = {
+                            val b = scratchBase.plus(r)
+                            scratchBase = b
+                            Baseline.save(context, Baseline.KIND_SCRATCH, b)
+                            msg = "스크래치 기준 · 양품 ${b.n}회 등록됨"
+                            sweepResult = null
+                        }, modifier = Modifier.weight(1f)) { Text("양품으로 등록", fontSize = 13.sp) }
+                        OutlinedButton(onClick = { sweepResult = null },
+                            modifier = Modifier.weight(1f)) { Text("닫기", fontSize = 13.sp) }
+                    }
+                }
+            }
+
+            Button(
+                onClick = { sweeping = true },
+                enabled = !sweeping,
+                modifier = Modifier.fillMaxWidth().height(48.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color(0xFF2E3A44), contentColor = Color.White
+                )
+            ) {
+                Text(
+                    if (sweeping) "검사 중… $sweepLeft 초" else "스크래치 검사 ($SWEEP_SECONDS초 · 손으로 돌리기)",
+                    fontSize = 15.sp
+                )
             }
 
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -310,7 +411,10 @@ private fun Inspect(controller: CameraController) {
                     OutlinedButton(
                         onClick = {
                             baseline = baseline.cleared()
-                            Baseline.save(context, baseline); msg = "기준 초기화됨"
+                            Baseline.save(context, Baseline.KIND_STAIN, baseline)
+                            scratchBase = scratchBase.cleared()
+                            Baseline.save(context, Baseline.KIND_SCRATCH, scratchBase)
+                            msg = "기준 초기화됨 (얼룩·스크래치)"
                         },
                         modifier = Modifier.height(46.dp)
                     ) { Text("초기화") }
@@ -321,15 +425,21 @@ private fun Inspect(controller: CameraController) {
                         .format(baseline.n, baseline.mean, baseline.sd, baseline.passLimit, baseline.failLimit),
                     fontSize = 11.sp, color = DIM, fontFamily = FontFamily.Monospace
                 )
+                Text(
+                    if (scratchBase.n == 0) "스크래치 기준 없음 — 양품으로 스윕 검사 후 등록"
+                    else "스크래치 · 등록 %d회 · 평균 %.1f · 합격 상한 %.1f"
+                        .format(scratchBase.n, scratchBase.mean, scratchBase.passLimit),
+                    fontSize = 11.sp, color = DIM, fontFamily = FontFamily.Monospace
+                )
 
                 HorizontalDivider(color = Color(0xFF262E33))
 
                 Text("현재 측정값", fontWeight = FontWeight.Bold, fontSize = 14.sp)
                 Text(
                     ("얼룩 지수 %.1f · 정상면 %d · 최대밝기 %d · 넓이 %.2f%%\n" +
-                        "선명도 %.1f · 포화 %.2f%% · 화소 %d")
-                        .format(stats.stainIndex, stats.median, stats.max,
-                            stats.brightArea * 100, stats.focus, stats.satRatio * 100, stats.pixels),
+                        "스크래치 %.1f · 신장도 %.1f · 선명도 %.1f · 포화 %.2f%%")
+                        .format(stats.stainIndex, stats.median, stats.max, stats.brightArea * 100,
+                            stats.scratchScore, stats.elongation, stats.focus, stats.satRatio * 100),
                     fontSize = 11.sp, color = DIM, fontFamily = FontFamily.Monospace
                 )
 
@@ -431,6 +541,9 @@ private fun HelpOverlay(onClose: () -> Unit) {
                 "4. 설정 → 양품 프리즘을 놓고 「양품으로 등록」을 5개 이상 반복한다",
                 "5. 이제 프리즘을 올릴 때마다 양품 / 재검 / 불량이 화면에 뜬다",
                 "6. 기록이 필요하면 「측정 저장」을 누른다",
+                "",
+                "스크래치는 각도가 맞아야만 번쩍인다. 「스크래치 검사」를 누르고",
+                "6초 동안 프리즘을 손으로 천천히 돌리면, 그동안의 최고 점수로 판정한다.",
             ).forEach { Text(it, fontSize = 14.sp, color = Color.White, lineHeight = 20.sp) }
             Text(
                 "얼룩 지수 = 검사 영역에서 가장 밝은 부분이 정상면보다 얼마나 밝은가.\n" +
@@ -478,7 +591,7 @@ private fun fitRect(box: Size, fw: Int, fh: Int): FloatArray? {
 }
 
 private fun buildCsvRow(
-    note: String, s: RoiStats, b: Baseline, cam: AppliedCamera, m: ManualSettings,
+    note: String, s: RoiStats, b: Baseline, sb: Baseline, cam: AppliedCamera, m: ManualSettings,
     roi: Roi, w: Int, h: Int, file: String, appVersion: String,
 ): String {
     fun q(v: String) = "\"" + v.replace("\"", "\"\"") + "\""
@@ -486,8 +599,10 @@ private fun buildCsvRow(
         q(Store.timestamp()), q(note), q(b.judge(s.stainIndex).label),
         "%.3f".format(s.stainIndex), s.median, s.p99, s.max, "%.3f".format(s.mean),
         "%.5f".format(s.brightArea), "%.5f".format(s.satRatio), "%.3f".format(s.focus),
+        "%.3f".format(s.scratchScore), "%.3f".format(s.elongation),
         b.n, "%.3f".format(b.mean), "%.3f".format(b.sd),
         "%.3f".format(b.passLimit), "%.3f".format(b.failLimit),
+        sb.n, "%.3f".format(sb.passLimit),
         cam.iso ?: "", cam.exposureNs ?: "", cam.focusDiopter ?: "", if (m.locked) 1 else 0,
         "%.4f".format(roi.cx), "%.4f".format(roi.cy), "%.4f".format(roi.size),
         w, h, q(file), q(appVersion)

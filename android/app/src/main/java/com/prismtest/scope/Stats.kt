@@ -2,6 +2,7 @@ package com.prismtest.scope
 
 import androidx.camera.core.ImageProxy
 import kotlin.math.abs
+import kotlin.math.sqrt
 
 /**
  * 검사 영역의 밝기 분포에서 얼룩 지수를 뽑는다.
@@ -34,10 +35,22 @@ data class RoiStats(
     val satRatio: Double,
     /** Laplacian 절대값 평균 — 초점 판정 */
     val focus: Double,
+    /**
+     * 밝은 화소 분포의 장축/단축 비. 1이면 원형, 크면 선형이다.
+     * 얼룩은 넓게 퍼져 1에 가깝고, 스크래치는 가늘고 길어 크게 나온다.
+     */
+    val elongation: Double,
+    /**
+     * 스크래치 점수 = 대비 × 선형성.
+     *
+     * 얼룩과 스크래치는 둘 다 밝게 뜨지만 형태가 다르다. 대비만 보면 구분이 안 되고,
+     * 형태만 보면 흐린 자국도 선형이면 잡힌다. 둘을 곱해야 "가늘고 길면서 밝은 것"만 남는다.
+     */
+    val scratchScore: Double,
     val pixels: Int,
 ) {
     companion object {
-        val EMPTY = RoiStats(0, 0, 0.0, 0, 0.0, 0.0, 0.0, 0.0, 0)
+        val EMPTY = RoiStats(0, 0, 0.0, 0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0)
     }
 }
 
@@ -121,6 +134,45 @@ object Stats {
         var bright = 0
         for (v in (cut + 1).coerceIn(0, 255)..255) bright += hist[v]
 
+        // 밝은 화소의 2차 모멘트로 선형성을 잰다.
+        // 좌표를 모아두지 않고 합만 누적하므로 메모리를 쓰지 않는다.
+        val thr = median + (stain * 0.6).toInt()
+        var bn = 0L
+        var sx = 0.0; var sy = 0.0
+        var sxx = 0.0; var syy = 0.0; var sxy = 0.0
+        y = t
+        while (y <= b) {
+            var x = l
+            while (x <= r) {
+                if (px(x, y) > thr) {
+                    val dx = (x - l).toDouble()
+                    val dy = (y - t).toDouble()
+                    bn++
+                    sx += dx; sy += dy
+                    sxx += dx * dx; syy += dy * dy; sxy += dx * dy
+                }
+                x += step
+            }
+            y += step
+        }
+        // 화소가 너무 적으면 모멘트가 불안정하다. 노이즈를 선형이라 판정하지 않도록 막는다.
+        val elong = if (bn >= 20) {
+            val mx = sx / bn; val my = sy / bn
+            val cxx = sxx / bn - mx * mx
+            val cyy = syy / bn - my * my
+            val cxy = sxy / bn - mx * my
+            val tr = cxx + cyy
+            val det = cxx * cyy - cxy * cxy
+            val disc = (tr * tr / 4.0 - det).coerceAtLeast(0.0)
+            val e1 = tr / 2.0 + sqrt(disc)
+            val e2 = tr / 2.0 - sqrt(disc)
+            if (e2 > 0.5) sqrt(e1 / e2).coerceAtMost(10.0) else 10.0
+        } else 1.0
+
+        // 선형성 0~1 로 정규화. 신장도 1이면 0점(원형 = 얼룩), 5 이상이면 만점.
+        val linearity = ((elong - 1.0) / 4.0).coerceIn(0.0, 1.0)
+        val scratch = stain * linearity
+
         // Laplacian 절대값 평균 — 경계에서 한 칸 안쪽만 훑는다
         var lapSum = 0.0
         var lapN = 0
@@ -146,6 +198,8 @@ object Stats {
             brightArea = bright.toDouble() / n,
             satRatio = sat.toDouble() / n,
             focus = if (lapN > 0) lapSum / lapN else 0.0,
+            elongation = elong,
+            scratchScore = scratch,
             pixels = n,
         )
     }
