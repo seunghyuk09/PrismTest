@@ -30,7 +30,7 @@ object Store {
      * 둘이 어긋날 일이 없다 — 열 순서는 MainActivity 의 buildCsvRow 와 같다.
      */
     val csvHeader: String = (
-        listOf("timestamp", "note", "mode", "verdict") +
+        listOf("timestamp", "note", "mode", "face", "verdict") +
             DefectType.values().flatMap {
                 listOf(
                     "${it.key}_score", "${it.key}_verdict",

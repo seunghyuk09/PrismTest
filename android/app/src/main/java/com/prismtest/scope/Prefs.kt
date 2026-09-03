@@ -28,4 +28,8 @@ object Prefs {
 
     fun autoTrack(c: Context) = p(c).getBoolean("auto_track", true)
     fun setAutoTrack(c: Context, v: Boolean) = p(c).edit().putBoolean("auto_track", v).apply()
+
+    /** 어느 면을 봤는지. 판정에는 쓰지 않고 CSV 에만 남긴다 — 아직 면별 기준이 없다. */
+    fun face(c: Context) = Face.of(p(c).getString("face", null))
+    fun setFace(c: Context, v: Face) = p(c).edit().putString("face", v.key).apply()
 }

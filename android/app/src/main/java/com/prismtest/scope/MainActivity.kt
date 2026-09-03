@@ -167,6 +167,7 @@ private fun Inspect(controller: CameraController) {
     var sweepSat by remember { mutableStateOf(0.0) }
 
     var note by remember { mutableStateOf("") }
+    var face by remember { mutableStateOf(Prefs.face(context)) }
     var msg by remember { mutableStateOf("") }
     var pendingSave by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
@@ -241,8 +242,8 @@ private fun Inspect(controller: CameraController) {
                         val file = Store.saveFrame(context, image, "cap")
                         Store.appendCsv(
                             context,
-                            buildCsvRow(note, s, result, models, controller.applied, settings,
-                                r, image.width, image.height, file ?: "", appVersion)
+                            buildCsvRow(note, face, s, result, models, controller.applied,
+                                settings, r, image.width, image.height, file ?: "", appVersion)
                         )
                         msg = if (file != null) "저장됨" else "저장 실패"
                     }
@@ -476,6 +477,11 @@ private fun Inspect(controller: CameraController) {
             }
             if (warn != null) {
                 Text("⚠ $warn", fontSize = 12.sp, color = if (liveBright) BAD else WARN)
+            }
+
+            FaceRow(face, !sweeping) {
+                face = it
+                Prefs.setFace(context, it)
             }
 
             if (screen == Screen.INSPECT) {
@@ -831,6 +837,28 @@ private fun PickChip(
     }
 }
 
+/**
+ * 어느 면을 봤는지 고른다. 판정에는 쓰지 않고 CSV 에만 남긴다.
+ *
+ * 면별 판정 기준을 만들려면 먼저 면별 데이터가 있어야 한다. 기준 없이 판정을 갈라놓으면
+ * 근거 없는 두 임계값이 생길 뿐이다 — 지금은 기록만 하고, 숫자가 쌓이면 그때 가른다.
+ */
+@Composable
+private fun FaceRow(current: Face, enabled: Boolean, onPick: (Face) -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text("본 면", fontSize = 11.sp, color = DIM)
+        Face.values().forEach { f ->
+            PickChip(
+                text = f.label,
+                selected = f == current,
+                accent = FRAME,
+                enabled = enabled,
+                modifier = Modifier.weight(1f)
+            ) { onPick(f) }
+        }
+    }
+}
+
 @Composable
 private fun SecondsRow(
     label: String,
@@ -961,7 +989,8 @@ private fun fitRect(box: Size, dispW: Int, dispH: Int): FloatArray? {
 }
 
 private fun buildCsvRow(
-    note: String, s: RoiStats, result: List<Double>?, models: Map<DefectType, DefectModel>,
+    note: String, face: Face, s: RoiStats, result: List<Double>?,
+    models: Map<DefectType, DefectModel>,
     cam: AppliedCamera, m: ManualSettings, roi: Roi, w: Int, h: Int,
     file: String, appVersion: String,
 ): String {
@@ -978,6 +1007,7 @@ private fun buildCsvRow(
     cells.add(q(Store.timestamp()))
     cells.add(q(note))
     cells.add(q(if (result != null) "sweep" else "live"))
+    cells.add(q(face.key))
     cells.add(q(overall.label))
     TYPES.forEachIndexed { i, t ->
         val mm = models.getValue(t)
