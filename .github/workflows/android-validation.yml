@@ -76,7 +76,11 @@ jobs:
           test -c /dev/kvm
           sudo chmod a+rw /dev/kvm
           sdkmanager 'emulator' 'system-images;android-30;default;x86_64'
-          echo no | avdmanager create avd --force --name PrismValidation --package 'system-images;android-30;default;x86_64' --device pixel_4
+          export ANDROID_AVD_HOME="$RUNNER_TEMP/prism-avd"
+          mkdir -p "$ANDROID_AVD_HOME"
+          echo no | avdmanager create avd --force --name PrismValidation --path "$ANDROID_AVD_HOME/PrismValidation.avd" --package 'system-images;android-30;default;x86_64' --device pixel_4
+          test -f "$ANDROID_AVD_HOME/PrismValidation.ini"
+          "$ANDROID_HOME/emulator/emulator" -list-avds
           mkdir -p out/android-validation
           adb start-server
           if ! "$ANDROID_HOME/emulator/emulator" -accel-check; then
