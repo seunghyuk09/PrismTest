@@ -1,0 +1,33 @@
+{
+  "package": "com.prismtest.scope",
+  "version": "0.1.20",
+  "versionCode": 20,
+  "repository": "https://github.com/seunghyuk09/PrismTest",
+  "previous_source_commit": "c4f617ddd0139444adc4339550542e5daf712caf",
+  "source_note": "The commit containing this APK includes the corresponding application source; v20 sets explicit readable text/button colors.",
+  "apk_bytes": 22434952,
+  "apk_sha256": "6106156e002b6f1a48ff53cf49c619a3d5eba45d61e4ae284353a47832a43714",
+  "source_zip_sha256": "0c4abdcd00f0d37799688d8a96138d0c8b80aa0dcbbc4b86b8b88df1fe18f96f",
+  "signer_sha256": "a45a9748c46959fe332d743fe7f9af7b63638a97385b9da2e2ca006b99b83de5",
+  "jvm_tests": {
+    "tests": 29,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "shared_native_libraries": "Byte-identical to v19 runtime-tested native libraries.",
+  "android_emulator_checks_v19": {
+    "camera_permission_denied_validator_opens": true,
+    "labelled_points_found": 2,
+    "labelled_points_total": 2,
+    "additional_candidates_unlabelled": 30,
+    "native_suite_passed": 10,
+    "native_suite_total": 10,
+    "benchmark_sample_count": 40,
+    "json_export_and_readback": true,
+    "html_export_original_roi_and_overlays": true
+  },
+  "physical_android_camera_tested": false,
+  "imported_user_video_ui_validation": "Not completed in software emulator; test on the physical phone.",
+  "performance_note": "Software emulator results are not physical-phone timing or camera-FPS measurements."
+}

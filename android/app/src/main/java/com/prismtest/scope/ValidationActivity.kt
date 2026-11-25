@@ -38,8 +38,9 @@ class ValidationActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         setContent {
-            MaterialTheme(colorScheme = darkColorScheme(primary = Color(0xFF80D5BC))) {
-                Surface(Modifier.fillMaxSize(), color = Color(0xFF0E151B)) {
+            MaterialTheme(colorScheme = darkColorScheme(primary = Color(0xFF80D5BC), onPrimary = Color(0xFF03251D))) {
+                Surface(Modifier.fillMaxSize(), color = Color(0xFF0E151B),
+                    contentColor = MaterialTheme.colorScheme.onSurface) {
                     ValidationScreen { finish() }
                 }
             }
