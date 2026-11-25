@@ -3,6 +3,7 @@ package com.prismtest.scope
 import android.content.ContentValues
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.Matrix
 import android.provider.MediaStore
 import androidx.camera.core.ImageProxy
 import java.io.OutputStreamWriter
@@ -21,9 +22,10 @@ object Store {
 
     private const val DIR_IMG = "Pictures/PrismScope"
     private const val DIR_DOC = "Documents/PrismScope"
-    private const val CSV_NAME = "prismscope_log.csv"
+    // Preserve the old four-type CSV; never append a five-type row to its old header.
+    private const val CSV_NAME = "prismscope_log_v2.csv"
 
-    private val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US)
+    private val stamp = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US)
 
     /**
      * 유형 열은 [DefectType] 에서 만든다. 유형을 추가하면 헤더와 행이 함께 늘어나므로
@@ -44,29 +46,36 @@ object Store {
                 "iso", "exposureNs", "focusDiopter", "locked", "zoom",
                 "roi_cx", "roi_cy", "roi_size",
                 "frameW", "frameH", "imageFile", "appVersion",
+                "dig_score_current", "dig_candidate_count", "dig_masked_fraction", "dig_candidates_xy", "result_issue",
+                "active_types",
             )
         ).joinToString(",")
 
     /** Y 평면을 그레이스케일 PNG 로 저장하고 파일명을 돌려준다. */
     fun saveFrame(context: Context, image: ImageProxy, tag: String): String? {
         val name = "prism_${stamp.format(Date())}_$tag.png"
-        val w = image.width
-        val h = image.height
+        val crop = image.cropRect
+        val w = crop.width()
+        val h = crop.height()
         val plane = image.planes[0]
         val buf = plane.buffer
         val rowStride = plane.rowStride
         val pixStride = plane.pixelStride
+        val offset = buf.position() + crop.top * rowStride + crop.left * pixStride
 
         val pixels = IntArray(w * h)
         for (y in 0 until h) {
             val rowBase = y * rowStride
             val outBase = y * w
             for (x in 0 until w) {
-                val v = buf.get(rowBase + x * pixStride).toInt() and 0xFF
+                val v = buf.get(offset + rowBase + x * pixStride).toInt() and 0xFF
                 pixels[outBase + x] = (0xFF shl 24) or (v shl 16) or (v shl 8) or v
             }
         }
-        val bmp = Bitmap.createBitmap(pixels, w, h, Bitmap.Config.ARGB_8888)
+        val raw = Bitmap.createBitmap(pixels, w, h, Bitmap.Config.ARGB_8888)
+        val rotation = image.imageInfo.rotationDegrees
+        val bmp = if (rotation == 0) raw else Bitmap.createBitmap(raw, 0, 0, w, h,
+            Matrix().apply { postRotate(rotation.toFloat()) }, false).also { raw.recycle() }
 
         val values = ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, name)
@@ -77,10 +86,9 @@ object Store {
             MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values
         ) ?: return null
         return try {
-            context.contentResolver.openOutputStream(uri)?.use { out ->
-                bmp.compress(Bitmap.CompressFormat.PNG, 100, out)
-            }
-            name
+            val out = context.contentResolver.openOutputStream(uri) ?: return null
+            val written = out.use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
+            if (written) name else null
         } catch (e: Exception) {
             null
         } finally {

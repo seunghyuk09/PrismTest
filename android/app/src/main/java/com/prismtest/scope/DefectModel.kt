@@ -74,7 +74,11 @@ data class DefectModel(
         }
 
     fun judge(score: Double): Verdict {
+        if (!score.isFinite()) return Verdict.RECHECK
         val b = band ?: return Verdict.NOT_READY
+        // Overlap includes reversed or indistinguishable defect distributions. Never report
+        // PASS for known defects merely because their score fell below a one-class boundary.
+        if (state == ModelState.OVERLAP || state == ModelState.GOOD_ONLY) return Verdict.RECHECK
         return when {
             score < b.pass -> Verdict.PASS
             score < b.fail -> Verdict.RECHECK

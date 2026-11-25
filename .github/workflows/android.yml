@@ -27,6 +27,9 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
+      - name: Validate shared dig detector on synthetic and user-labelled frames
+        run: python3 analysis/validate_dig.py --sanitize --report out/native-validation.json
+
       # 릴리스 키스토어는 저장소에 없다. Secrets 에 있으면 복원해서 쓰고,
       # 없으면 디버그 키로 서명한 뒤 그 사실을 릴리스 노트에 표시한다.
       - name: Restore release keystore
@@ -55,7 +58,7 @@ jobs:
         # 로그 끝을 채워 정작 필요한 컴파일 오류(e: file:...)를 밀어내 버린다.
         run: |
           set -o pipefail
-          ./gradlew --no-daemon --console=plain assembleRelease bundleRelease 2>&1 \
+          ./gradlew --no-daemon --console=plain testReleaseUnitTest assembleRelease bundleRelease 2>&1 \
             | tee build.log || {
               echo "───────── 컴파일 오류만 다시 ─────────"
               grep -E "^(e|w): |error:" build.log | head -60

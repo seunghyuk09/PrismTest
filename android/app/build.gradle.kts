@@ -12,6 +12,7 @@ val releaseStorePath: String? = System.getenv("RELEASE_KEYSTORE_PATH")
 android {
     namespace = "com.prismtest.scope"
     compileSdk = 35
+    ndkVersion = "27.0.12077973"
 
     defaultConfig {
         applicationId = "com.prismtest.scope"
@@ -19,6 +20,8 @@ android {
         targetSdk = 35
         versionCode = (System.getenv("BUILD_NUMBER") ?: "1").toInt()
         versionName = "0.1.${System.getenv("BUILD_NUMBER") ?: "0"}"
+        ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
+        externalNativeBuild { cmake { cppFlags += "-std=c++17" } }
     }
 
     signingConfigs {
@@ -64,6 +67,12 @@ android {
     }
     kotlinOptions { jvmTarget = "17" }
     buildFeatures { compose = true }
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
+    }
     packaging { resources.excludes += "/META-INF/{AL2.0,LGPL2.1}" }
 
     dependenciesInfo {
@@ -75,6 +84,8 @@ android {
 }
 
 dependencies {
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
     implementation(platform("androidx.compose:compose-bom:2024.10.01"))
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-graphics")

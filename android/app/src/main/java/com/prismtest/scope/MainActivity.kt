@@ -1,8 +1,10 @@
 package com.prismtest.scope
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.os.SystemClock
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -119,14 +121,20 @@ private fun Root(controller: CameraController) {
     Surface(Modifier.fillMaxSize(), color = Color(0xFF0E1113)) {
         Box(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
             if (granted) Inspect(controller)
-            else Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text("카메라 권한을 허용해 주세요", color = Color.White)
+            else Column(Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.Center,
+                horizontalAlignment = Alignment.CenterHorizontally) {
+                Text("실시간 검사는 카메라 권한이 필요합니다", color = Color.White)
+                Button(onClick = { launcher.launch(Manifest.permission.CAMERA) }) { Text("카메라 권한 허용") }
+                OutlinedButton(onClick = { context.startActivity(Intent(context, ValidationActivity::class.java)) }) {
+                    Text("사진·영상 검증기 열기")
+                }
             }
         }
     }
 }
 
 @Composable
+@OptIn(ExperimentalMaterial3Api::class)
 private fun Inspect(controller: CameraController) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -145,12 +153,16 @@ private fun Inspect(controller: CameraController) {
     var inspectSec by remember { mutableIntStateOf(Prefs.inspectSec(context)) }
     var enrollSec by remember { mutableIntStateOf(Prefs.enrollSec(context)) }
     var autoTrack by remember { mutableStateOf(Prefs.autoTrack(context)) }
-    /** 0 = 양품, 1..4 = 그 유형의 불량. */
+    var activeTypes by remember { mutableStateOf(Prefs.activeTypes(context)) }
+    /** 0 = 양품, 1..TYPES.size = 그 유형의 불량. */
     var pick by remember { mutableIntStateOf(0) }
 
     // 유형별 판정 기준. 등록한 양품·불량 샘플에서 계산된다.
     var models by remember {
         mutableStateOf(TYPES.associateWith { DefectModel.load(context, it) })
+    }
+    var modelProfiles by remember {
+        mutableStateOf(TYPES.associateWith { Prefs.modelProfile(context, it) })
     }
 
     // 검사 = 손으로 돌리는 동안의 유형별 최댓값 수집.
@@ -165,6 +177,15 @@ private fun Inspect(controller: CameraController) {
     // 검사 동안 가장 나빴던 화면 상태. 한 프레임이라도 방이 찍혔으면 그 결과는 못 쓴다.
     var sweepMedian by remember { mutableIntStateOf(0) }
     var sweepSat by remember { mutableStateOf(0.0) }
+    var validFrames by remember { mutableIntStateOf(0) }
+    var lastValidAt by remember { mutableStateOf(0L) }
+    var resultIssue by remember { mutableStateOf<String?>(null) }
+    var invalidReason by remember { mutableStateOf("") }
+    var sweepTypes by remember { mutableStateOf(activeTypes) }
+    var sweepProfile by remember { mutableStateOf("") }
+    var profileChanged by remember { mutableStateOf(false) }
+    var resetType by remember { mutableStateOf<DefectType?>(null) }
+    var resetAll by remember { mutableStateOf(false) }
 
     var note by remember { mutableStateOf("") }
     var face by remember { mutableStateOf(Prefs.face(context)) }
@@ -194,8 +215,8 @@ private fun Inspect(controller: CameraController) {
                     // 화면에 서는 방향 기준의 크기. 오버레이 좌표는 이걸로 맞춘다.
                     val rot = ((image.imageInfo.rotationDegrees % 360) + 360) % 360
                     val swap = rot == 90 || rot == 270
-                    frameW = if (swap) image.height else image.width
-                    frameH = if (swap) image.width else image.height
+                    frameW = if (swap) image.cropRect.height() else image.cropRect.width()
+                    frameH = if (swap) image.cropRect.width() else image.cropRect.height()
 
                     // 영역을 먼저 물체에 맞춘 뒤 그 영역을 잰다. 순서가 반대면 한 프레임 늦는다.
                     var r = roiRef.value
@@ -214,7 +235,24 @@ private fun Inspect(controller: CameraController) {
                     live = s
                     applied = controller.applied
 
-                    if (sweeping) {
+                    val manualApplied = settings.locked && applied.aeOff && applied.afOff &&
+                        (applied.awbOff || applied.awbLocked)
+                    val profile = captureProfile(controller, settings, caps, frameW, frameH)
+                    if (sweeping && profile != sweepProfile) profileChanged = true
+                    val legacyMode = (if (sweeping) sweepTypes else activeTypes).any { it != DefectType.DIG }
+                    val frameIssue = when {
+                        s.pixels < 100 -> "검사 영역에 유효한 영상이 없습니다"
+                        !manualApplied -> "촬영 조건을 고정하고 적용될 때까지 기다리세요"
+                        sweeping && profileChanged -> "촬영 조건이 바뀌었습니다. 고정 후 다시 시작하세요"
+                        legacyMode && s.median > DARK_LIMIT -> "밝은 띠·손가락을 피해 어두운 검사면을 조준하세요"
+                        s.satRatio > SAT_LIMIT || s.dig.maskedFraction > 0.10 -> "반사광이 검사 영역을 가립니다. 각도를 바꾸세요"
+                        s.median < 3 && s.p99 < 6 -> "검사면이 보이지 않습니다. 조명·초점을 확인하세요"
+                        else -> null
+                    }
+
+                    if (sweeping && frameIssue == null) {
+                        validFrames++
+                        lastValidAt = SystemClock.elapsedRealtime()
                         // 유형마다 최댓값을 따로 잡는다. 스크래치가 번쩍이는 각도와
                         // 얼룩이 가장 잘 보이는 각도는 달라서 한 프레임으로는 못 잡는다.
                         val cur = peaks
@@ -235,6 +273,9 @@ private fun Inspect(controller: CameraController) {
                         lastMean = s.mean
                         if (s.median > sweepMedian) sweepMedian = s.median
                         if (s.satRatio > sweepSat) sweepSat = s.satRatio
+                    } else if (sweeping) {
+                        invalidReason = frameIssue ?: "영상 확인 필요"
+                        lastMean = -1.0
                     }
 
                     if (pendingSave) {
@@ -243,10 +284,15 @@ private fun Inspect(controller: CameraController) {
                         Store.appendCsv(
                             context,
                             buildCsvRow(note, face, s, result, models, controller.applied,
-                                settings, r, image.width, image.height, file ?: "", appVersion)
+                                settings, r, frameW, frameH, file ?: "", appVersion, resultIssue,
+                                if (result != null) sweepTypes else activeTypes, modelProfiles, profile)
                         )
                         msg = if (file != null) "저장됨" else "저장 실패"
                     }
+                } catch (e: Exception) {
+                    live = RoiStats.EMPTY
+                    invalidReason = "영상 분석 오류 — 다시 시작해 주세요"
+                    msg = invalidReason
                 } finally {
                     image.close()
                 }
@@ -263,6 +309,10 @@ private fun Inspect(controller: CameraController) {
         lastMean = -1.0
         sweepMedian = 0
         sweepSat = 0.0
+        validFrames = 0
+        lastValidAt = 0L
+        invalidReason = ""
+        resultIssue = null
         result = null
         msg = ""
         for (i in sweepDur downTo 1) {
@@ -273,27 +323,42 @@ private fun Inspect(controller: CameraController) {
         sweeping = false
         val final = peaks
         result = final
+        resultIssue = when {
+            validFrames < maxOf(6, sweepDur * 2) -> invalidReason.ifBlank { "유효 영상이 부족합니다. 다시 관찰하세요" }
+            SystemClock.elapsedRealtime() - lastValidAt > 1500 -> "최신 영상이 없습니다. 카메라 상태를 확인하세요"
+            !settings.locked -> "촬영 조건이 고정되지 않았습니다"
+            profileChanged -> "검사 중 촬영 조건이 바뀌었습니다. 다시 등록·검사하세요"
+            motion < sweepDur * MOTION_PER_SEC -> "관찰 변화가 부족합니다. 여러 각도로 다시 확인하세요"
+            else -> null
+        }
 
         if (sweepMode == Screen.ENROLL) {
             // 등록은 되돌릴 수 없다. 못 믿을 측정이면 조용히 넣지 말고 이유를 말한다.
             msg = when {
-                sweepMedian > DARK_LIMIT -> "등록 취소 — 배경이 밝습니다 (정상면 $sweepMedian)"
-                sweepSat > SAT_LIMIT -> "등록 취소 — 빛이 하얗게 뭉갰습니다"
-                motion < sweepDur * MOTION_PER_SEC -> "등록 취소 — 각도 변화가 부족합니다. 더 크게 돌리세요"
+                resultIssue != null -> "등록 취소 — $resultIssue"
+                sweepTypes.any { t ->
+                    val m = models.getValue(t)
+                    (m.good.isNotEmpty() || m.bad.isNotEmpty()) && modelProfiles[t] != sweepProfile
+                } -> "등록 취소 — 기존 기준과 촬영 조건이 다릅니다. 설정에서 해당 유형 기준을 초기화한 뒤 등록하세요"
                 pick == 0 -> {
                     var m = models
                     TYPES.forEachIndexed { i, t ->
+                        if (t !in sweepTypes) return@forEachIndexed
                         val nm = m.getValue(t).plusGood(final[i])
                         DefectModel.save(context, t, nm)
+                        Prefs.setModelProfile(context, t, sweepProfile)
+                        modelProfiles = modelProfiles + (t to sweepProfile)
                         m = m + (t to nm)
                     }
                     models = m
-                    "양품 등록됨 — 누적 ${m.getValue(TYPES[0]).good.size}개"
+                    "양품 등록됨 — ${sweepTypes.joinToString { it.label }}"
                 }
                 else -> {
                     val t = TYPES[pick - 1]
                     val nm = models.getValue(t).plusBad(final[pick - 1])
                     DefectModel.save(context, t, nm)
+                    Prefs.setModelProfile(context, t, sweepProfile)
+                    modelProfiles = modelProfiles + (t to sweepProfile)
                     models = models + (t to nm)
                     "${t.label} 불량 등록됨 — 누적 ${nm.bad.size}개"
                 }
@@ -312,26 +377,26 @@ private fun Inspect(controller: CameraController) {
 
     // 표시할 점수: 검사가 끝났으면 그 결과, 아니면 지금 화면의 값
     val shown: List<Double> = result ?: if (sweeping) peaks else TYPES.map { it.score(live) }
-    val verdicts = TYPES.mapIndexed { i, t -> models.getValue(t).judge(shown[i]) }
-    val overall = when {
-        result == null -> null
-        verdicts.any { it == Verdict.FAIL } -> Verdict.FAIL
-        verdicts.any { it == Verdict.RECHECK } -> Verdict.RECHECK
-        verdicts.any { it == Verdict.PASS } -> Verdict.PASS
-        else -> Verdict.NOT_READY
+    val currentProfile = captureProfile(controller, settings, caps, frameW, frameH)
+    val cameraReady = settings.locked && applied.aeOff && applied.afOff && (applied.awbOff || applied.awbLocked)
+    val verdicts = TYPES.mapIndexed { i, t ->
+        if (modelProfiles[t] != currentProfile) Verdict.NOT_READY else models.getValue(t).judge(shown[i])
     }
+    val overall = if (result == null) null else if (resultIssue != null) Verdict.RECHECK
+                  else overallVerdict(TYPES.indices.filter { TYPES[it] in sweepTypes }.map { verdicts[it] })
 
     val badScene: String? = when {
         result == null -> null
-        sweepMedian > DARK_LIMIT ->
+        resultIssue != null -> resultIssue
+        sweepTypes.any { it != DefectType.DIG } && sweepMedian > DARK_LIMIT ->
             "배경이 밝습니다 (정상면 $sweepMedian) — 프리즘이 아니라 주변을 재고 있습니다"
         sweepSat > SAT_LIMIT -> "빛이 하얗게 뭉갰습니다 — 조명 각도를 낮추세요"
         else -> null
     }
 
     val tooDark = live.median < 3 && live.p99 < 6
-    val liveBright = live.median > DARK_LIMIT
-    val liveDim = live.median > DARK_OK && !liveBright
+    val liveBright = activeTypes.any { it != DefectType.DIG } && live.median > DARK_LIMIT
+    val liveDim = activeTypes.any { it != DefectType.DIG } && live.median > DARK_OK && !liveBright
     val glare = live.satRatio > SAT_LIMIT
     val coverage = if (sweepDur > 0) (motion / (sweepDur * MOTION_PER_SEC)).coerceIn(0.0, 1.0) else 0.0
 
@@ -366,7 +431,24 @@ private fun Inspect(controller: CameraController) {
                     if (tracked) "자동 추적" else "추적 대기 — 프리즘을 비추세요"
                 } else "검사 영역"
                 drawContext.canvas.nativeCanvas.drawText(tag, left + 6f, top - 14f, labelPaint)
+                // These circles are localized scatter candidates, not confirmed material labels
+                // or physical dig diameters. They follow the same viewport as the analyzed pixels.
+                live.dig.spots.take(8).forEachIndexed { index, spot ->
+                    val x = rect[0] + spot.cx * rect[2]
+                    val y = rect[1] + spot.cy * rect[3]
+                    val radius = maxOf(12f, spot.rx * rect[2] + 7f, spot.ry * rect[3] + 7f)
+                    drawCircle(WARN, radius, Offset(x, y), style = Stroke(3f))
+                    drawContext.canvas.nativeCanvas.drawText("${index + 1}", x + radius, y, labelPaint)
+                }
             }
+
+            Text(
+                if (live.dig.spots.isEmpty()) "디그 위치 관찰 중 · 미검출은 양품 확정이 아닙니다"
+                else "점 형태 후보 ${live.dig.spots.size}곳 · 강한 ${minOf(8, live.dig.spots.size)}곳 표시",
+                modifier = Modifier.align(Alignment.BottomStart).padding(8.dp)
+                    .background(Color(0xC0000000), RoundedCornerShape(6.dp)).padding(8.dp),
+                color = if (live.dig.spots.isEmpty()) Color.White else WARN, fontSize = 12.sp
+            )
 
             if (sweeping) {
                 Box(
@@ -386,7 +468,7 @@ private fun Inspect(controller: CameraController) {
                         )
                         Bar(coverage.toFloat(), Modifier.width(150.dp))
                         Text(
-                            "각도 커버리지 ${(coverage * 100).roundToInt()}%",
+                            "관찰 변화 ${(coverage * 100).roundToInt()}% · 유효 $validFrames 프레임",
                             fontSize = 11.sp, color = if (coverage >= 1.0) OK else DIM,
                             fontFamily = FontFamily.Monospace
                         )
@@ -404,13 +486,19 @@ private fun Inspect(controller: CameraController) {
                 }
             }
 
-            if (showHelp) HelpOverlay(inspectSec) { showHelp = false }
+            if (showHelp) {
+                ModalBottomSheet(onDismissRequest = { showHelp = false }, containerColor = PANEL) {
+                    HelpOverlay(inspectSec) { showHelp = false }
+                }
+            }
         }
 
         // ─────────── 패널 ───────────
         Column(
             Modifier
                 .fillMaxWidth()
+                .heightIn(max = 410.dp)
+                .verticalScroll(rememberScrollState())
                 .background(PANEL)
                 .padding(horizontal = 12.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(7.dp)
@@ -433,10 +521,11 @@ private fun Inspect(controller: CameraController) {
                             fontSize = 11.sp, color = DIM, fontFamily = FontFamily.Monospace
                         )
                         Text(
-                            "배경 ${live.median}",
+                            "영역 밝기 ${live.median}",
                             fontSize = 11.sp, fontWeight = FontWeight.Bold,
                             fontFamily = FontFamily.Monospace,
                             color = when {
+                                activeTypes == setOf(DefectType.DIG) -> DIM
                                 live.median <= 8 -> OK
                                 live.median <= DARK_OK -> WARN
                                 else -> BAD
@@ -446,6 +535,7 @@ private fun Inspect(controller: CameraController) {
                 }
                 if (settings.locked) {
                     OutlinedButton(
+                        enabled = !sweeping,
                         onClick = {
                             settings = settings.copy(locked = false)
                             controller.updateManual(settings)
@@ -455,6 +545,7 @@ private fun Inspect(controller: CameraController) {
                     ) { Text("자동", fontSize = 13.sp) }
                 } else {
                     Button(
+                        enabled = !sweeping,
                         onClick = {
                             settings = controller.currentAsManual(settings)
                             controller.updateManual(settings)
@@ -470,7 +561,7 @@ private fun Inspect(controller: CameraController) {
 
             val warn = when {
                 tooDark -> "화면이 너무 어둡습니다. 조명을 켜세요"
-                liveBright -> "배경이 밝습니다 (정상면 ${live.median}) — 암실이 필요합니다"
+                liveBright -> "밝은 띠·주변을 피해 검사면을 조준하세요. 작은 차광 후드도 사용할 수 있습니다"
                 glare -> "너무 밝아 하얗게 뭉개집니다. 각도를 조정하세요"
                 liveDim -> "배경이 조금 밝습니다 (정상면 ${live.median}) — 8 이하가 목표"
                 else -> null
@@ -484,6 +575,27 @@ private fun Inspect(controller: CameraController) {
                 Prefs.setFace(context, it)
             }
 
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("검사할 유형 · 선택한 유형만 판정", color = DIM, fontSize = 11.sp, modifier = Modifier.weight(1f))
+                TextButton(onClick = { context.startActivity(Intent(context, ValidationActivity::class.java)) }, enabled = !sweeping) {
+                    Text("검증기")
+                }
+            }
+            for (row in TYPES.toList().chunked(3)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    row.forEach { t ->
+                        PickChip(t.label, t in activeTypes, BLUE, !sweeping, Modifier.weight(1f)) {
+                            if (t !in activeTypes || activeTypes.size > 1) {
+                                activeTypes = if (t in activeTypes) activeTypes - t else activeTypes + t
+                                Prefs.setActiveTypes(context, activeTypes)
+                                result = null
+                            }
+                        }
+                    }
+                    repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
+                }
+            }
+
             if (screen == Screen.INSPECT) {
                 SecondsRow("검사 시간", Prefs.INSPECT_CHOICES, inspectSec, !sweeping) {
                     inspectSec = it
@@ -493,9 +605,12 @@ private fun Inspect(controller: CameraController) {
                     onClick = {
                         sweepDur = inspectSec
                         sweepMode = Screen.INSPECT
+                        sweepTypes = activeTypes
+                        sweepProfile = currentProfile
+                        profileChanged = false
                         sweeping = true
                     },
-                    enabled = !sweeping,
+                    enabled = !sweeping && cameraReady,
                     modifier = Modifier.fillMaxWidth().height(54.dp),
                     shape = RoundedCornerShape(12.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = BLUE, contentColor = Color.White)
@@ -521,7 +636,7 @@ private fun Inspect(controller: CameraController) {
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            overall.label, fontSize = 20.sp, fontWeight = FontWeight.Bold,
+                            "직전 검사: ${overall.label}", fontSize = 20.sp, fontWeight = FontWeight.Bold,
                             color = Color.Black, modifier = Modifier.weight(1f)
                         )
                         if (motion < sweepDur * MOTION_PER_SEC) {
@@ -530,19 +645,22 @@ private fun Inspect(controller: CameraController) {
                     }
                 }
 
-                for (row in 0 until (TYPES.size + 1) / 2) {
+                val visibleTypes = TYPES.filter { it in activeTypes }
+                for (row in 0 until (visibleTypes.size + 1) / 2) {
                     Row(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
                         for (col in 0 until 2) {
                             val i = row * 2 + col
-                            if (i >= TYPES.size) {
+                            if (i >= visibleTypes.size) {
                                 Spacer(Modifier.weight(1f))
                                 continue
                             }
+                            val t = visibleTypes[i]
+                            val at = TYPES.indexOf(t)
                             TypeCard(
-                                type = TYPES[i],
-                                score = shown[i],
-                                verdict = verdicts[i],
-                                model = models.getValue(TYPES[i]),
+                                type = t,
+                                score = shown[at],
+                                verdict = verdicts[at],
+                                model = models.getValue(t),
                                 modifier = Modifier.weight(1f)
                             )
                         }
@@ -577,7 +695,7 @@ private fun Inspect(controller: CameraController) {
                     "무엇으로 등록합니까",
                     fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Color.White
                 )
-                for (row in 0 until 2) {
+                for (row in 0 until (TYPES.size + 3) / 3) {
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         for (col in 0 until 3) {
                             val i = row * 3 + col
@@ -606,9 +724,12 @@ private fun Inspect(controller: CameraController) {
                     onClick = {
                         sweepDur = enrollSec
                         sweepMode = Screen.ENROLL
+                        sweepTypes = if (pick == 0) activeTypes else setOf(TYPES[pick - 1])
+                        sweepProfile = currentProfile
+                        profileChanged = false
                         sweeping = true
                     },
-                    enabled = !sweeping,
+                    enabled = !sweeping && cameraReady,
                     modifier = Modifier.fillMaxWidth().height(54.dp),
                     shape = RoundedCornerShape(12.dp),
                     colors = ButtonDefaults.buttonColors(
@@ -625,7 +746,7 @@ private fun Inspect(controller: CameraController) {
                 }
 
                 Text(
-                    TYPES.joinToString("  ") {
+                    TYPES.filter { it in activeTypes }.joinToString("  ") {
                         val m = models.getValue(it)
                         "${it.label.take(2)} ${m.good.size}/${m.bad.size}"
                     } + "   (양품/불량)",
@@ -658,10 +779,11 @@ private fun Inspect(controller: CameraController) {
 
         // ─────────── 설정 ───────────
         if (showSettings) {
+            ModalBottomSheet(onDismissRequest = { showSettings = false }, containerColor = PANEL) {
             Column(
                 Modifier
                     .fillMaxWidth()
-                    .heightIn(max = 300.dp)
+                    .heightIn(max = 600.dp)
                     .background(Color(0xFF0F1417))
                     .verticalScroll(rememberScrollState())
                     .padding(14.dp),
@@ -671,13 +793,13 @@ private fun Inspect(controller: CameraController) {
                     Column(Modifier.weight(1f)) {
                         Text("검사 영역 자동 추적", fontWeight = FontWeight.Bold, fontSize = 14.sp)
                         Text(
-                            "배경이 검으면 화면에서 검지 않은 것은 프리즘뿐이다. " +
-                                "끄면 사각형을 손으로 맞춘다.",
+                            "밝은 띠나 손가락을 따라가면 끄고 검사면을 눌러 영역을 맞추세요.",
                             fontSize = 11.sp, color = DIM
                         )
                     }
                     Switch(
                         checked = autoTrack,
+                        enabled = !sweeping,
                         onCheckedChange = { autoTrack = it; Prefs.setAutoTrack(context, it) }
                     )
                 }
@@ -688,20 +810,20 @@ private fun Inspect(controller: CameraController) {
                 TYPES.forEach { t ->
                     val m = models.getValue(t)
                     val b = m.band
+                    Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
                         "${t.label} — 양품 ${m.good.size} · 불량 ${m.bad.size} · ${m.state.label}" +
                             (b?.let { "\n   합격 %.1f 미만 · 불량 %.1f 이상".format(it.pass, it.fail) } ?: ""),
-                        fontSize = 11.sp, color = DIM, fontFamily = FontFamily.Monospace
+                        fontSize = 11.sp, color = DIM, fontFamily = FontFamily.Monospace, modifier = Modifier.weight(1f)
                     )
+                    TextButton(onClick = { resetType = t }, enabled = !sweeping) { Text("초기화") }
+                    }
                 }
                 OutlinedButton(
                     onClick = {
-                        TYPES.forEach { DefectModel.save(context, it, DefectModel()) }
-                        models = TYPES.associateWith { DefectModel() }
-                        result = null
-                        msg = "모든 기준 초기화됨"
+                        resetAll = true
                     },
-                    modifier = Modifier.height(44.dp)
+                    modifier = Modifier.height(44.dp), enabled = !sweeping
                 ) { Text("전체 초기화") }
 
                 HorizontalDivider(color = Color(0xFF262E33))
@@ -722,7 +844,7 @@ private fun Inspect(controller: CameraController) {
                 Text("배율 — 프리즘이 화면을 채울수록 정확해진다", fontWeight = FontWeight.Bold, fontSize = 14.sp)
                 Sld(
                     "배율", "%.1f×".format(settings.zoom), settings.zoom,
-                    (caps.zoomRange?.lower ?: 1f)..(caps.zoomRange?.upper ?: 8f)
+                    (caps.zoomRange?.lower ?: 1f)..(caps.zoomRange?.upper ?: 8f), enabled = !sweeping
                 ) {
                     settings = settings.copy(zoom = it)
                     controller.updateManual(settings)
@@ -733,7 +855,7 @@ private fun Inspect(controller: CameraController) {
                 Text("카메라 수동 조정 — 고정 상태에서만 반영", fontWeight = FontWeight.Bold, fontSize = 14.sp)
                 val isoLo = caps.isoRange?.lower ?: 50
                 val isoHi = caps.isoRange?.upper ?: 800
-                Sld("ISO", "${settings.iso}", settings.iso.toFloat(), isoLo.toFloat()..isoHi.toFloat()) {
+                Sld("ISO", "${settings.iso}", settings.iso.toFloat(), isoLo.toFloat()..isoHi.toFloat(), enabled = !sweeping) {
                     settings = settings.copy(iso = it.roundToInt())
                     controller.updateManual(settings)
                 }
@@ -741,7 +863,7 @@ private fun Inspect(controller: CameraController) {
                 val expHi = minOf(caps.exposureRange?.upper ?: 100_000_000L, 100_000_000L).toFloat()
                 Sld(
                     "노출", "%.1f ms".format(settings.exposureNs / 1e6),
-                    settings.exposureNs.toFloat(), expLo..expHi
+                    settings.exposureNs.toFloat(), expLo..expHi, enabled = !sweeping
                 ) {
                     settings = settings.copy(exposureNs = it.toLong())
                     controller.updateManual(settings)
@@ -750,7 +872,7 @@ private fun Inspect(controller: CameraController) {
                 Sld(
                     "초점 거리",
                     if (settings.focusDiopter > 0f) "%.0f mm".format(1000f / settings.focusDiopter) else "무한대",
-                    settings.focusDiopter, 0f..focusHi
+                    settings.focusDiopter, 0f..focusHi, enabled = !sweeping
                 ) {
                     settings = settings.copy(focusDiopter = it)
                     controller.updateManual(settings)
@@ -771,7 +893,22 @@ private fun Inspect(controller: CameraController) {
                     fontSize = 11.sp, color = Color(0xFF67737A), fontFamily = FontFamily.Monospace
                 )
             }
+            }
         }
+    }
+    if (resetType != null || resetAll) {
+        val targets = if (resetAll) TYPES.toSet() else setOfNotNull(resetType)
+        AlertDialog(onDismissRequest = { resetType = null; resetAll = false },
+            title = { Text("검사 기준 초기화") },
+            text = { Text("${targets.joinToString { it.label }}의 등록 샘플과 촬영 기준을 삭제합니다. 저장된 이미지·CSV는 유지됩니다.") },
+            confirmButton = { TextButton(onClick = {
+                targets.forEach { t ->
+                    DefectModel.save(context, t, DefectModel()); Prefs.setModelProfile(context, t, null)
+                    models = models + (t to DefectModel()); modelProfiles = modelProfiles + (t to null)
+                }
+                result = null; msg = "선택한 검사 기준을 초기화했습니다"; resetType = null; resetAll = false
+            }) { Text("초기화") } },
+            dismissButton = { TextButton(onClick = { resetType = null; resetAll = false }) { Text("취소") } })
     }
 }
 
@@ -919,8 +1056,8 @@ private fun HelpOverlay(inspectSec: Int, onClose: () -> Unit) {
         ) {
             Text("사용 순서", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = Color.White)
             listOf(
-                "1. 폰을 암실 거치대에 고정하고 조명을 켠다",
-                "2. 프리즘을 손에 들면 노란 사각형이 알아서 따라붙는다",
+                "1. 폰과 조명을 고정한다. 작은 차광 후드로 시작해도 된다",
+                "2. 어두운 검사면을 눌러 노란 영역을 맞춘다. 밝은 띠·손가락을 피한다",
                 "3. 「현재 상태로 고정」 — 이후 밝기가 변하지 않는다",
                 "4. 「샘플 등록」에서 양품을 " + DefectModel.MIN_GOOD + "개 등록한다",
                 "5. 유형별 불량도 " + DefectModel.MIN_BAD + "개씩 등록하면 경계가 정확해진다",
@@ -934,14 +1071,15 @@ private fun HelpOverlay(inspectSec: Int, onClose: () -> Unit) {
                     "한 각도로 고정해 찍으면 그냥 놓친다. 검사원이 손으로 기울여 보는 것과 같은 이유다.",
                 fontSize = 12.sp, color = DIM, lineHeight = 18.sp
             )
+            DigReference()
             Text(
-                "「양품」으로 등록하면 네 유형 모두에 양품 표본이 들어간다. " +
+                "「양품」으로 등록하면 선택한 유형에만 양품 표본이 들어간다. " +
                     "특정 유형을 고르면 그 유형의 불량 표본으로만 들어간다.",
                 fontSize = 12.sp, color = DIM, lineHeight = 18.sp
             )
             Text(
                 "「양품·불량이 겹침」이 뜨면 — 그 유형은 지금 조명으로 구분되지 않는다는 뜻이다. " +
-                    "샘플을 더 넣어도 안 갈리면 알고리즘이 아니라 조명을 바꿔야 한다.",
+                    "촬영 조건·라벨·알고리즘을 함께 점검하세요. 이 상태에서는 양품으로 확정하지 않습니다.",
                 fontSize = 12.sp, color = WARN, lineHeight = 18.sp
             )
             Button(onClick = onClose, modifier = Modifier.fillMaxWidth().height(48.dp)) {
@@ -954,7 +1092,7 @@ private fun HelpOverlay(inspectSec: Int, onClose: () -> Unit) {
 @Composable
 private fun Sld(
     label: String, value: String, current: Float,
-    range: ClosedFloatingPointRange<Float>, onChange: (Float) -> Unit,
+    range: ClosedFloatingPointRange<Float>, enabled: Boolean = true, onChange: (Float) -> Unit,
 ) {
     Column {
         Row {
@@ -962,6 +1100,7 @@ private fun Sld(
             Text(value, fontSize = 13.sp, fontFamily = FontFamily.Monospace, color = Color(0xFFB0BEC5))
         }
         Slider(
+            enabled = enabled,
             value = current.coerceIn(range.start, range.endInclusive),
             onValueChange = onChange, valueRange = range
         )
@@ -992,17 +1131,16 @@ private fun buildCsvRow(
     note: String, face: Face, s: RoiStats, result: List<Double>?,
     models: Map<DefectType, DefectModel>,
     cam: AppliedCamera, m: ManualSettings, roi: Roi, w: Int, h: Int,
-    file: String, appVersion: String,
+    file: String, appVersion: String, resultIssue: String?, activeTypes: Set<DefectType>,
+    modelProfiles: Map<DefectType, String?>, currentProfile: String,
 ): String {
     fun q(v: String) = "\"" + v.replace("\"", "\"\"") + "\""
     val scores = result ?: TYPES.map { it.score(s) }
-    val verdicts = TYPES.mapIndexed { i, t -> models.getValue(t).judge(scores[i]) }
-    val overall = when {
-        verdicts.any { it == Verdict.FAIL } -> Verdict.FAIL
-        verdicts.any { it == Verdict.RECHECK } -> Verdict.RECHECK
-        verdicts.any { it == Verdict.PASS } -> Verdict.PASS
-        else -> Verdict.NOT_READY
+    val verdicts = TYPES.mapIndexed { i, t ->
+        if (modelProfiles[t] != currentProfile) Verdict.NOT_READY else models.getValue(t).judge(scores[i])
     }
+    val overall = if (result == null) Verdict.NOT_READY else if (resultIssue != null) Verdict.RECHECK
+                  else overallVerdict(TYPES.indices.filter { TYPES[it] in activeTypes }.map { verdicts[it] })
     val cells = ArrayList<Any>()
     cells.add(q(Store.timestamp()))
     cells.add(q(note))
@@ -1040,5 +1178,18 @@ private fun buildCsvRow(
     cells.add(h)
     cells.add(q(file))
     cells.add(q(appVersion))
+    cells.add("%.3f".format(java.util.Locale.US, s.dig.score))
+    cells.add(s.dig.spots.size)
+    cells.add("%.5f".format(java.util.Locale.US, s.dig.maskedFraction))
+    cells.add(q(s.dig.spots.joinToString(";") {
+        "%.5f:%.5f".format(java.util.Locale.US, it.cx, it.cy)
+    }))
+    cells.add(q(resultIssue ?: ""))
+    cells.add(q(activeTypes.joinToString(";") { it.key }))
     return cells.joinToString(",")
 }
+
+private fun captureProfile(controller: CameraController, settings: ManualSettings, caps: CameraCaps,
+                           width: Int, height: Int): String = CalibrationProfile.key(
+    android.os.Build.MANUFACTURER + "/" + android.os.Build.MODEL, caps.cameraId, width, height,
+    settings.iso, settings.exposureNs, settings.focusDiopter, settings.zoom, controller.whiteBalanceProfile)

@@ -1,0 +1,5 @@
+cmake_minimum_required(VERSION 3.22.1)
+project(prismvision LANGUAGES CXX)
+add_library(prismvision SHARED dig_detector.cpp dig_jni.cpp)
+target_compile_features(prismvision PRIVATE cxx_std_17)
+target_compile_options(prismvision PRIVATE -Wall -Wextra -Werror)

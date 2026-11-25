@@ -26,8 +26,21 @@ object Prefs {
     fun enrollSec(c: Context) = p(c).getInt("sec_enroll", 20)
     fun setEnrollSec(c: Context, v: Int) = p(c).edit().putInt("sec_enroll", v).apply()
 
-    fun autoTrack(c: Context) = p(c).getBoolean("auto_track", true)
+    fun autoTrack(c: Context) = p(c).getBoolean("auto_track", false)
     fun setAutoTrack(c: Context, v: Boolean) = p(c).edit().putBoolean("auto_track", v).apply()
+
+    fun activeTypes(c: Context): Set<DefectType> {
+        val keys = p(c).getStringSet("active_types_v1", null) ?: setOf(DefectType.DIG.key)
+        return DefectType.values().filter { it.key in keys }.toSet().ifEmpty { setOf(DefectType.DIG) }
+    }
+    fun setActiveTypes(c: Context, types: Set<DefectType>) =
+        p(c).edit().putStringSet("active_types_v1", types.map { it.key }.toSet()).apply()
+
+    fun modelProfile(c: Context, type: DefectType): String? = p(c).getString("profile_${type.key}", null)
+    fun setModelProfile(c: Context, type: DefectType, profile: String?) =
+        p(c).edit().apply {
+            if (profile == null) remove("profile_${type.key}") else putString("profile_${type.key}", profile)
+        }.apply()
 
     /** 어느 면을 봤는지. 판정에는 쓰지 않고 CSV 에만 남긴다 — 아직 면별 기준이 없다. */
     fun face(c: Context) = Face.of(p(c).getString("face", null))

@@ -4,7 +4,7 @@ package com.prismtest.scope
  * 검사하는 불량 유형.
  *
  * 누적 이력(n=61,488)에서 표면 얼룩·흰색 이물·스크래치·검정 이물이 불량의 97.9% 다.
- * 나머지(페인트 얼룩·Dig·파손)는 건수가 적거나 조립 이후 공정이라 여기서 다루지 않는다.
+ * 디그는 사용자가 확인한 영상 사례를 바탕으로 별도의 국소 점 검출 코어를 사용한다.
  *
  * 네 유형 모두 암시야에서 **밝게 뜨거나 어둡게 막는다**는 점은 같고, 다른 것은 모양이다.
  * 그래서 [RoiStats] 의 원시 특징을 유형별로 다르게 조합해 점수를 만든다.
@@ -21,6 +21,7 @@ enum class DefectType(
     WHITE("white", "흰색 이물", "작고 아주 밝은 알갱이"),
     SCRATCH("scratch", "스크래치", "가늘고 긴 밝은 선"),
     BLACK("black", "검정 이물", "빛을 막아 검게 보이는 점"),
+    DIG("dig_v1", "디그", "표면의 국소적인 점 손상 · 화면의 원은 의심 위치"),
     ;
 
     /**
@@ -38,6 +39,7 @@ enum class DefectType(
         SCRATCH -> s.contrast * s.linearity
         // 빛을 막는 것: 아래쪽 대비로만 보인다
         BLACK -> s.darkContrast
+        DIG -> s.dig.score
     }
 
     companion object {

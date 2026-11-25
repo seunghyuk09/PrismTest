@@ -20,12 +20,14 @@ import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
+import androidx.camera.core.UseCaseGroup
 import androidx.camera.core.resolutionselector.AspectRatioStrategy
 import androidx.camera.core.resolutionselector.ResolutionSelector
 import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
+import androidx.core.view.doOnLayout
 import androidx.lifecycle.LifecycleOwner
 import java.util.concurrent.ExecutorService
 
@@ -37,6 +39,7 @@ data class AppliedCamera(
     val aeMode: Int? = null,
     val afMode: Int? = null,
     val awbMode: Int? = null,
+    val awbLocked: Boolean = false,
     val noiseReduction: Int? = null,
     val edgeMode: Int? = null,
 ) {
@@ -123,6 +126,12 @@ class CameraController(
     @Volatile private var lastGains: RggbChannelVector? = null
     @Volatile private var lastTransform: ColorSpaceTransform? = null
 
+    val whiteBalanceProfile: String
+        get() = lastGains?.let {
+            "%.3f,%.3f,%.3f,%.3f".format(java.util.Locale.US,
+                it.red, it.greenEven, it.greenOdd, it.blue)
+        } ?: "awb-locked"
+
     fun bind(
         lifecycleOwner: LifecycleOwner,
         previewView: PreviewView,
@@ -158,6 +167,7 @@ class CameraController(
                         aeMode = result.get(CaptureResult.CONTROL_AE_MODE),
                         afMode = result.get(CaptureResult.CONTROL_AF_MODE),
                         awbMode = result.get(CaptureResult.CONTROL_AWB_MODE),
+                        awbLocked = result.get(CaptureResult.CONTROL_AWB_LOCK) == true,
                         noiseReduction = result.get(CaptureResult.NOISE_REDUCTION_MODE),
                         edgeMode = result.get(CaptureResult.EDGE_MODE),
                     )
@@ -189,13 +199,17 @@ class CameraController(
                 .build()
             analysis.setAnalyzer(analysisExecutor, ImageAnalysis.Analyzer { image -> onFrame(image) })
 
-            val cam = p.bindToLifecycle(
-                lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, preview, analysis
-            )
-            camera = cam
-            caps = readCaps(cam, analysis)
-            updateManual(settings)
-            onReady(caps)
+            previewView.doOnLayout {
+                // Both streams must use the same sensor crop. Matching nominal aspect ratios
+                // alone does not align annotations on devices that choose different resolutions.
+                val group = UseCaseGroup.Builder().addUseCase(preview).addUseCase(analysis)
+                previewView.viewPort?.let { group.setViewPort(it) }
+                val cam = p.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, group.build())
+                camera = cam
+                caps = readCaps(cam, analysis)
+                updateManual(settings)
+                onReady(caps)
+            }
         }, ContextCompat.getMainExecutor(context))
     }
 

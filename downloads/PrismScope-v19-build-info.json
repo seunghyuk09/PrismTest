@@ -1,0 +1,26 @@
+{
+  "package": "com.prismtest.scope",
+  "version": "0.1.19",
+  "versionCode": 19,
+  "repository": "https://github.com/seunghyuk09/PrismTest",
+  "base_commit": "d6164dfb5e3020a40ed92907e4e4bc3c79a6671c",
+  "branch": "codex/live-dig-inspection",
+  "source_state": "Built from a local working tree before publication; the commit containing this artifact includes the corresponding app source.",
+  "apk_bytes": 22434952,
+  "apk_sha256": "b58ebd252ff34de8b0e4cb9459facf23babd4d6410c63a9bf5a93f3c28f7ed1e",
+  "source_zip_sha256": "f25ea0d4a2fc6833fcad202d4f63e2b855713189a9971c042cd080251fc77b28",
+  "signer_sha256": "a45a9748c46959fe332d743fe7f9af7b63638a97385b9da2e2ca006b99b83de5",
+  "jvm_tests": {
+    "tests": 29,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "native_device_suite_on_host": {
+    "checks": 10,
+    "passed": 10,
+    "benchmark_samples": 40
+  },
+  "physical_android_camera_tested": false,
+  "android_ui_test_status": "Not completed at build time; software emulator system UI startup was unreliable."
+}

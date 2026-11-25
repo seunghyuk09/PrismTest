@@ -1,0 +1,27 @@
+{
+  "source": "Video Project 2.mp4",
+  "sha256": "b74ac87d2e163a740db6d9afc055ec813cc1e95fb15fc891ddb75984b5194fee",
+  "time_seconds": 2.0,
+  "original_width": 1080,
+  "original_height": 1920,
+  "crop_xywh": [
+    470,
+    990,
+    160,
+    160
+  ],
+  "confirmed_spots_approx_xy": [
+    [
+      71.4,
+      26.2
+    ],
+    [
+      68.3,
+      85.0
+    ]
+  ],
+  "annotation_tolerance_px": 5,
+  "label_source": "User identified two dig locations in screenshot. Other points are unlabelled.",
+  "physical_piece_count": 1,
+  "size_mm": null
+}

@@ -49,6 +49,7 @@ data class RoiStats(
     /** Laplacian 절대값 평균 — 초점 판정 */
     val focus: Double,
     val pixels: Int,
+    val dig: DigResult = DigResult(),
 ) {
     companion object {
         val EMPTY = RoiStats(0, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0)
@@ -68,22 +69,10 @@ data class Roi(val cx: Float, val cy: Float, val size: Float)
 object Stats {
 
     /** 화면 정규화 좌표 → 버퍼 정규화 좌표. rotation 은 ImageProxy 의 rotationDegrees. */
-    private fun toBuffer(cx: Float, cy: Float, rotation: Int): Pair<Float, Float> =
-        when (((rotation % 360) + 360) % 360) {
-            90 -> cy to (1f - cx)
-            180 -> (1f - cx) to (1f - cy)
-            270 -> (1f - cy) to cx
-            else -> cx to cy
-        }
+    private fun toBuffer(cx: Float, cy: Float, rotation: Int) = FrameTransform.toBuffer(cx, cy, rotation)
 
     /** 버퍼 정규화 좌표 → 화면 정규화 좌표. [toBuffer] 의 역변환. */
-    private fun fromBuffer(bx: Float, by: Float, rotation: Int): Pair<Float, Float> =
-        when (((rotation % 360) + 360) % 360) {
-            90 -> (1f - by) to bx
-            180 -> (1f - bx) to (1f - by)
-            270 -> by to (1f - bx)
-            else -> bx to by
-        }
+    private fun fromBuffer(bx: Float, by: Float, rotation: Int) = FrameTransform.toDisplay(bx, by, rotation)
 
     /**
      * 검사 영역을 프리즘에 맞춰 따라간다.
@@ -107,8 +96,10 @@ object Stats {
         val buf = plane.buffer
         val rowStride = plane.rowStride
         val pixStride = plane.pixelStride
-        val w = image.width
-        val h = image.height
+        val crop = image.cropRect
+        val w = crop.width()
+        val h = crop.height()
+        val offset = buf.position() + crop.top * rowStride + crop.left * pixStride
         if (w <= 4 || h <= 4) return null
 
         val rot = image.imageInfo.rotationDegrees
@@ -120,7 +111,7 @@ object Stats {
         val r = (bx * w + halfPx).toInt().coerceIn(l + 1, w - 1)
         val b = (by * h + halfPx).toInt().coerceIn(t + 1, h - 1)
 
-        fun px(x: Int, y: Int): Int = buf.get(y * rowStride + x * pixStride).toInt() and 0xFF
+        fun px(x: Int, y: Int): Int = buf.get(offset + y * rowStride + x * pixStride).toInt() and 0xFF
 
         val hist = IntArray(256)
         var n = 0
@@ -201,8 +192,10 @@ object Stats {
         val buf = plane.buffer
         val rowStride = plane.rowStride
         val pixStride = plane.pixelStride
-        val w = image.width
-        val h = image.height
+        val crop = image.cropRect
+        val w = crop.width()
+        val h = crop.height()
+        val offset = buf.position() + crop.top * rowStride + crop.left * pixStride
         if (w <= 2 || h <= 2) return RoiStats.EMPTY
 
         val (bx, by) = toBuffer(roi.cx, roi.cy, image.imageInfo.rotationDegrees)
@@ -212,7 +205,7 @@ object Stats {
         val r = (bx * w + halfPx).toInt().coerceIn(l + 1, w - 1)
         val b = (by * h + halfPx).toInt().coerceIn(t + 1, h - 1)
 
-        fun px(x: Int, y: Int): Int = buf.get(y * rowStride + x * pixStride).toInt() and 0xFF
+        fun px(x: Int, y: Int): Int = buf.get(offset + y * rowStride + x * pixStride).toInt() and 0xFF
 
         // 8bit 히스토그램이면 백분위를 정확하게, 정렬 없이 구할 수 있다.
         val hist = IntArray(256)
@@ -323,6 +316,8 @@ object Stats {
             satRatio = sat.toDouble() / n,
             focus = if (lapN > 0) lapSum / lapN else 0.0,
             pixels = n,
+            dig = NativeDig.detect(buf, offset, rowStride, pixStride, l, t, r - l + 1, b - t + 1,
+                                   w, h, image.imageInfo.rotationDegrees),
         )
     }
 }
