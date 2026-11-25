@@ -11,7 +11,7 @@
 카메라 권한 없이도 사진·영상 검증기를 사용할 수 있다.
 
 영역 크기·자동 추적 조건이 달라지면 해당 조건으로 양품·불량 기준을 다시 등록해야 한다. 기존 사진과 기록은 보존한다.
-릴리스 빌드·51개 단위 테스트가 통과했다. 배포 APK에 대한 Android 실행 검증은 [GitHub Actions](https://github.com/seunghyuk09/PrismTest/actions/workflows/android-validation.yml)에서 진행한다. 실제 폰의 선명도·조명·처리 속도는 폰에서 확인해야 한다.
+릴리스 빌드·단위 테스트 **51개**·배포 APK의 Android 실행 테스트 **5개**가 통과했다. [Android 11 가상기기 검증 기록](https://github.com/seunghyuk09/PrismTest/actions/runs/45716424088)에서 같은 APK 파일의 SHA-256과 결과를 확인할 수 있다. 실제 폰의 선명도·조명·처리 속도는 현장에서 확인해야 한다.
 [영역 확대 사용법](docs/wide-roi-v23.md) · [화질 설정](docs/image-quality-v22.md) · [자동 저장](docs/auto-result-v21.md) · [검증기](docs/validation-v19.md) · [APK 빌드 정보](downloads/PrismScope-v23-build-info.json)
 
 ---

@@ -29,11 +29,29 @@
   },
   "calibration_profile": "profile-v2 includes ROI size and tracking mode; older criteria are retained but cannot approve samples under changed conditions.",
   "android_instrumentation": {
-    "execution": "pending_accelerated_ci",
+    "execution": "passed",
     "planned_tests": 5,
-    "tests_passed_in_v23": 0,
+    "tests_passed_in_v23": 5,
+    "failures_in_successful_run": 0,
     "workflow": ".github/workflows/android-validation.yml",
-    "tests_target_exact_published_apk": true
+    "workflow_run_url": "https://github.com/seunghyuk09/PrismTest/actions/runs/45716424088",
+    "workflow_run_id": 45716424088,
+    "workflow_conclusion": "success",
+    "validated_commit": "bb6f93f6cafe25fc28649c55ea836ef7ada04ce5",
+    "validated_date": "2026-11-26 Asia/Seoul",
+    "environment": "Android 11 API 30 x86_64 emulator with KVM acceleration and an emulated camera",
+    "tests_target_exact_published_apk": true,
+    "installed_apk_sha256": "d6a3fff4c74b3b1fe46f6a2f6c742389c010107fc00d0d84ad6fc00730edf40e",
+    "artifact_name": "published-apk-validation",
+    "artifact_sha256": "db6dfadf816a96cf2db7c896888037a217bf1c497b0236fc2e2cc79dfb76fa4c",
+    "checks": [
+      "Missing camera frame produces a recheck record without an invented photo",
+      "Save original and marked fixture PNGs plus JSON, verify pixels and candidates, open the result viewer without camera permission",
+      "Preserve 2560x1920 source pixels when rotating and saving a 1920x2560 original",
+      "Roll back partial media rows if report generation fails",
+      "Adjust ROI 65 to 70 to 65 percent, persist the selection, switch quality modes, and rebind the shared viewport when enlarging the preview"
+    ],
+    "previous_attempts": "Local v22 storage tests passed three checks but system ANR dialogs blocked UI checks. Initial GitHub runs failed during SDK setup or before emulator discovery. Those failures are not counted as passing v23 tests."
   },
   "physical_camera_tested": false,
   "image_paths": [
