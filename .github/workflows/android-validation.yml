@@ -33,13 +33,46 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
-      - uses: android-actions/setup-android@v3
+      - name: Use hosted Android SDK
+        run: |
+          python3 - <<'PY'
+          import os, subprocess
+          from pathlib import Path
+          output = Path('out/android-validation')
+          output.mkdir(parents=True, exist_ok=True)
+          try:
+              sdk = Path(os.environ.get('ANDROID_HOME') or os.environ['ANDROID_SDK_ROOT'])
+              manager = sdk / 'cmdline-tools/latest/bin/sdkmanager'
+              assert manager.is_file(), f'Hosted sdkmanager missing: {manager}'
+              with open(os.environ['GITHUB_PATH'], 'a') as paths:
+                  paths.write(f'{manager.parent}\n{sdk / "platform-tools"}\n{sdk / "emulator"}\n')
+              for args in [[str(manager), '--version'], [str(manager), '--licenses']]:
+                  result = subprocess.run(args, input='y\n' * 100, text=True,
+                                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                  with (output / 'sdk-setup.log').open('a') as log:
+                      log.write(result.stdout)
+                  print(result.stdout)
+                  result.check_returncode()
+          except Exception as error:
+              with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+                  summary.write('SDK setup failed: ' + str(error) + '\n\n')
+                  log = output / 'sdk-setup.log'
+                  if log.exists(): summary.write('```text\n' + log.read_text()[-6000:] + '\n```\n')
+              raise
+          PY
       - uses: gradle/actions/setup-gradle@v4
       - name: Build instrumentation APK
         working-directory: android
-        run: ./gradlew --no-daemon --max-workers=2 --console=plain :app:assembleReleaseAndroidTest
+        run: |
+          mkdir -p ../out/android-validation
+          if ! ./gradlew --no-daemon --max-workers=2 --console=plain :app:assembleReleaseAndroidTest > ../out/android-validation/gradle.log 2>&1; then
+            tail -n 80 ../out/android-validation/gradle.log >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
       - name: Set up accelerated Android 11
         run: |
+          trap 'tail -n 60 out/android-validation/emulator-setup.log >> "$GITHUB_STEP_SUMMARY"' ERR
+          exec > >(tee out/android-validation/emulator-setup.log) 2>&1
           test -c /dev/kvm
           sudo chmod a+rw /dev/kvm
           sdkmanager 'emulator' 'system-images;android-30;default;x86_64'

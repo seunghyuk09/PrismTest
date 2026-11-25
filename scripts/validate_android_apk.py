@@ -91,6 +91,13 @@ def main():
                 summary.write('Published APK validation: **' + report['status'] + '**\n\n')
                 summary.write('APK SHA-256: `' + report['apk_sha256'] + '`\n\n')
                 summary.write('Passed Android tests: ' + str(report.get('tests_passed', 0)) + '\n')
+                for run in report['runs']:
+                    summary.write(f"\n- {run['class']}: {'passed' if run['passed'] else 'failed'} ({run['expected_tests']} tests)\n")
+                    if not run['passed']:
+                        log = OUT / (run['class'] + '.log')
+                        summary.write('\n```text\n' + log.read_text()[-6500:] + '\n```\n')
+                if report.get('error'):
+                    summary.write('\nError: ' + report['error'] + '\n')
 
 
 if __name__ == '__main__':
