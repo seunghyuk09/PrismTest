@@ -1,0 +1,53 @@
+{
+  "package": "com.prismtest.scope",
+  "version": "0.1.22",
+  "versionCode": 22,
+  "apk_bytes": 22549672,
+  "apk_sha256": "4b8504b138d4234fd59b29e796418cc8e5be2db493a453a6d2518bdb0d5c0730",
+  "signer_sha256": "a45a9748c46959fe332d743fe7f9af7b63638a97385b9da2e2ca006b99b83de5",
+  "signing": "Nondebuggable release build signed with the same repository test certificate as v21.",
+  "jvm_tests": {
+    "tests": 50,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "repository": "https://github.com/seunghyuk09/PrismTest",
+  "base_commit": "d7554931f4178a3ca48c1020d377a30558e30077",
+  "source_note": "The commit containing this artifact includes the corresponding application source.",
+  "native_abis": [
+    "arm64-v8a",
+    "x86_64"
+  ],
+  "analysis_requests": {
+    "standard": [
+      1280,
+      960
+    ],
+    "detail": [
+      2560,
+      1920
+    ]
+  },
+  "preview_request": [
+    1920,
+    1440
+  ],
+  "resolution_note": "Requested sizes are not guarantees. CameraX negotiates supported streams and the shared viewport crops them. The app shows the actual received and saved sizes.",
+  "android_instrumentation": {
+    "release_apk": true,
+    "test_apk_build": "passed",
+    "execution": "blocked_before_runner_start",
+    "planned_tests": 5,
+    "tests_passed_in_v22": 0,
+    "environment": "Android 11 API 30 x86_64 software emulator",
+    "reason": "Android system_server repeatedly restarted with Lost network stack; package service disappeared and APK installation timed out. No v22 instrumentation pass is claimed."
+  },
+  "physical_camera_tested": false,
+  "image_paths": [
+    "Pictures/PrismScope/Results"
+  ],
+  "report_path": "Documents/PrismScope/Results",
+  "image_note": "Unscaled rotated cropped 8-bit luminance PNG from the same analyzed frame; no color still capture or super-resolution.",
+  "location_scope": "Dig candidates on each type-specific peak frame. Candidate circles do not establish physical size or confirmed material defects. Other types show only the analysis ROI."
+}

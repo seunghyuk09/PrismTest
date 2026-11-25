@@ -63,6 +63,7 @@ data class CameraCaps(
     val hardwareLevel: Int = -1,
     val supportsManualSensor: Boolean = false,
     val supportsManualPostProcessing: Boolean = false,
+    val boundQuality: CaptureQuality = CaptureQuality.STANDARD,
 ) {
     val hardwareLevelName: String
         get() = when (hardwareLevel) {
@@ -115,6 +116,7 @@ class CameraController(
     private val context: Context,
     private val analysisExecutor: ExecutorService,
 ) {
+    @Volatile private var bindingGeneration = 0
     private var provider: ProcessCameraProvider? = null
     private var camera: Camera? = null
 
@@ -138,10 +140,18 @@ class CameraController(
         settings: ManualSettings,
         onFrame: (ImageProxy) -> Unit,
         onReady: (CameraCaps) -> Unit,
+        quality: CaptureQuality = CaptureQuality.STANDARD,
+        onError: (String) -> Unit = {},
     ) {
+        val generation = ++bindingGeneration
+        camera = null
+        applied = AppliedCamera()
         val future = ProcessCameraProvider.getInstance(context)
         future.addListener({
-            val p = try { future.get() } catch (e: Exception) { return@addListener }
+            if (generation != bindingGeneration) return@addListener
+            val p = try { future.get() } catch (e: Exception) {
+                onError("카메라를 열지 못했습니다: ${e.message}"); return@addListener
+            }
             provider = p
             p.unbindAll()
 
@@ -149,6 +159,11 @@ class CameraController(
             // 두 스트림의 비가 다르면 ROI 오버레이 좌표가 어긋난다.
             val resSel = ResolutionSelector.Builder()
                 .setAspectRatioStrategy(AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY)
+                .setResolutionStrategy(ResolutionStrategy(Size(1920, 1440), ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER))
+                .setResolutionFilter { sizes, _ ->
+                    val allowed = quality.bounded(sizes.map { FrameSize(it.width, it.height) }, preview = true).toSet()
+                    sizes.filter { FrameSize(it.width, it.height) in allowed }
+                }
                 .build()
 
             val previewBuilder = Preview.Builder().setResolutionSelector(resSel)
@@ -160,6 +175,7 @@ class CameraController(
                     request: CaptureRequest,
                     result: TotalCaptureResult,
                 ) {
+                    if (generation != bindingGeneration) return
                     applied = AppliedCamera(
                         iso = result.get(CaptureResult.SENSOR_SENSITIVITY),
                         exposureNs = result.get(CaptureResult.SENSOR_EXPOSURE_TIME),
@@ -179,17 +195,23 @@ class CameraController(
             val preview = previewBuilder.build()
             preview.setSurfaceProvider(previewView.surfaceProvider)
 
-            // 분석 버퍼는 기본값이 640×480 이라 프리즘이 화면의 일부만 차지하면
-            // 결함에 배정되는 화소가 몇 개 남지 않는다. 1280×960 을 요청한다.
-            // ROI 안만 step=2 로 훑으므로 이 정도는 프레임률에 부담이 되지 않는다.
+            // Detail requests more real source pixels. No bitmap enlargement/sharpening is used
+            // to manufacture evidence. Actual negotiated/cropped dimensions are shown in the UI.
             val analysisRes = ResolutionSelector.Builder()
                 .setAspectRatioStrategy(AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY)
                 .setResolutionStrategy(
                     ResolutionStrategy(
-                        Size(1280, 960),
+                        Size(quality.target.width, quality.target.height),
                         ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER
                     )
                 )
+                .setAllowedResolutionMode(if (quality == CaptureQuality.DETAIL)
+                    ResolutionSelector.PREFER_HIGHER_RESOLUTION_OVER_CAPTURE_RATE
+                    else ResolutionSelector.PREFER_CAPTURE_RATE_OVER_HIGHER_RESOLUTION)
+                .setResolutionFilter { sizes, _ ->
+                    val allowed = quality.bounded(sizes.map { FrameSize(it.width, it.height) }).toSet()
+                    sizes.filter { FrameSize(it.width, it.height) in allowed }
+                }
                 .build()
 
             val analysis = ImageAnalysis.Builder()
@@ -197,18 +219,27 @@ class CameraController(
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                 .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_YUV_420_888)
                 .build()
-            analysis.setAnalyzer(analysisExecutor, ImageAnalysis.Analyzer { image -> onFrame(image) })
+            analysis.setAnalyzer(analysisExecutor, ImageAnalysis.Analyzer { image ->
+                if (generation == bindingGeneration) onFrame(image) else image.close()
+            })
 
             previewView.doOnLayout {
+                if (generation != bindingGeneration) return@doOnLayout
                 // Both streams must use the same sensor crop. Matching nominal aspect ratios
                 // alone does not align annotations on devices that choose different resolutions.
                 val group = UseCaseGroup.Builder().addUseCase(preview).addUseCase(analysis)
                 previewView.viewPort?.let { group.setViewPort(it) }
-                val cam = p.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, group.build())
-                camera = cam
-                caps = readCaps(cam, analysis)
-                updateManual(settings)
-                onReady(caps)
+                try {
+                    val cam = p.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, group.build())
+                    camera = cam
+                    caps = readCaps(cam, analysis).copy(boundQuality = quality)
+                    updateManual(settings)
+                    onReady(caps)
+                } catch (e: Exception) {
+                    if (quality == CaptureQuality.DETAIL) {
+                        bind(lifecycleOwner, previewView, settings, onFrame, onReady, CaptureQuality.STANDARD, onError)
+                    } else onError("카메라 연결 실패: ${e.message}")
+                }
             }
         }, ContextCompat.getMainExecutor(context))
     }
@@ -330,6 +361,7 @@ class CameraController(
     }
 
     fun unbind() {
+        bindingGeneration++
         provider?.unbindAll()
         camera = null
     }

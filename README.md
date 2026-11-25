@@ -2,18 +2,21 @@
 
 ## 📱 안드로이드 앱 다운로드
 
-**[APK v21 다운로드 — 결과 위치 표시·사진 자동 저장](https://github.com/seunghyuk09/PrismTest/raw/refs/heads/claude/transparent-prism-surface-inspection-1s9537/downloads/PrismScope-v21-auto-result.apk)** · 약 23 MB
+**[APK v22 다운로드 — 정밀 화질·큰 카메라 화면·사진 확대](https://github.com/seunghyuk09/PrismTest/raw/refs/heads/claude/transparent-prism-surface-inspection-1s9537/downloads/PrismScope-v22-detail.apk)** · 약 23 MB
 
-폰에서 위 링크를 눌러 APK를 내려받고 설치한다. 검사가 끝나면 유형별 최고 점수 장면의 원본·표시 사진을 자동 저장하고 결과 화면을 연다. **직전 결과**로 다시 볼 수 있다.
+폰에서 위 링크를 눌러 APK를 내려받고 설치한다. **화질 → 정밀**에서 더 높은 해상도를 요청하고 **수신·저장 크기**를 확인한다. **카메라 크게**로 실시간 화면을 키우고, 검사 후 자동 저장된 사진을 **두 손가락으로 확대**할 수 있다.
+정밀은 2560×1920 요청이며 기기·화면 크롭에 따라 실제 크기는 달라진다. 원본은 분석한 동일 장면의 휘도 PNG이고, 정밀에서 처리 속도가 낮아질 수 있다. **직전 결과**로 저장 사진을 다시 볼 수 있다.
 내장 디그 예시는 **검증기 → 내장 디그 예시 → 이 장면 비교하기**로 확인한다.
 카메라 권한 없이도 사진·영상 검증기를 사용할 수 있다.
 
-릴리스 빌드·44개 단위 테스트·Android 저장/결과 화면 테스트 3개가 통과했다. 실제 폰의 카메라·조명·처리 속도는 폰에서 확인해야 한다.
-[자동 저장 사용법](docs/auto-result-v21.md) · [검증기](docs/validation-v19.md) · [검사함·지그 구상](docs/fixture-budget.md) · [APK 빌드 정보](downloads/PrismScope-v21-build-info.json)
+릴리스 빌드·50개 단위 테스트가 통과했다. Android 실행 검증은 테스트 운영체제 재시작 문제로 미완료다. 실제 폰의 선명도·조명·처리 속도는 폰에서 확인해야 한다.
+[화질 설정 사용법](docs/image-quality-v22.md) · [자동 저장](docs/auto-result-v21.md) · [검증기](docs/validation-v19.md) · [검사함·지그 구상](docs/fixture-budget.md) · [APK 빌드 정보](downloads/PrismScope-v22-build-info.json)
 
 ---
 
 **스마트폰 카메라로 투명 프리즘을 검사하는 시스템** — 조명·차광 보조 지그 + 안드로이드 앱.
+
+**v22:** 표준/정밀 화질 선택, 실제 수신·저장 해상도 표시, 카메라 크게, 결과 사진 확대를 추가했다. 해상도가 달라지면 판정 기준을 다시 확인해야 한다.
 
 **v21:** 검사 종료 후 유형별 최고 점수 장면을 자동 저장하고, 디그 후보 위치 또는 분석 영역이 표시된 사진과 원본 휘도 사진을 비교한다. 서로 다른 각도의 좌표를 한 사진에 합치지 않는다.
 
@@ -31,7 +34,7 @@
 육안검사에서 하던 동작 그대로이고, 앱은 그동안 본 것을
 **유형별 수치와 판정**으로 남긴다.
 
-- 앱 다운로드: [releases/latest](https://github.com/seunghyuk09/PrismTest/releases/latest)
+- 앱 다운로드: [APK v22](https://github.com/seunghyuk09/PrismTest/raw/refs/heads/claude/transparent-prism-surface-inspection-1s9537/downloads/PrismScope-v22-detail.apk)
 - 사용법: [`docs/user-manual.md`](docs/user-manual.md)
 
 ---

@@ -8,7 +8,6 @@ import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -18,8 +17,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -122,9 +119,13 @@ private fun InspectionResultScreen(reportUri: String, onClose: () -> Unit) {
             }
             Text("${if (t.optBoolean("valid_peak")) "해당 유형의 최고 점수 장면" else "진단용 장면 · 유효 영상 없음"} · 점수 ${String.format(Locale.US, "%.2f", t.optDouble("score"))}",
                 fontSize = 12.sp, color = Color(0xFFA6B7C3))
+            t.optJSONObject("frame")?.let { frame ->
+                Text("원본 ${frame.optInt("display_width")}×${frame.optInt("display_height")}px · 휘도 PNG",
+                    fontSize = 12.sp, color = Color(0xFFA6B7C3))
+            }
         }
         Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
-            photo?.let { Image(it.asImageBitmap(), "저장된 검사 사진", Modifier.fillMaxSize(), contentScale = ContentScale.Fit) }
+            photo?.let { ZoomableEvidenceImage(it, Modifier.fillMaxSize()) }
             if (loading || record == null && error.isBlank()) CircularProgressIndicator()
             else if (imageUri.isBlank() && record != null) Text("촬영 프레임을 확보하지 못해 사진이 없습니다.\n검사 조건과 기록을 확인해 주세요.")
         }

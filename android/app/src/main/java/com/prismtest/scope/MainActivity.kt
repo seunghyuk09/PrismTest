@@ -148,6 +148,10 @@ private fun Inspect(controller: CameraController) {
     var settings by remember { mutableStateOf(ManualSettings()) }
     var caps by remember { mutableStateOf(CameraCaps()) }
     var applied by remember { mutableStateOf(AppliedCamera()) }
+    var captureQuality by remember { mutableStateOf(Prefs.captureQuality(context)) }
+    var cameraBinding by remember { mutableStateOf(true) }
+    var largePreview by remember { mutableStateOf(false) }
+    var boxSize by remember { mutableStateOf(Size.Zero) }
 
     var roi by remember { mutableStateOf(Roi(0.5f, 0.5f, 0.45f)) }
     var live by remember { mutableStateOf(RoiStats.EMPTY) }
@@ -253,11 +257,20 @@ private fun Inspect(controller: CameraController) {
         sweeping = true
     }
 
-    LaunchedEffect(Unit) {
+    LaunchedEffect(captureQuality, boxSize) {
+        if (boxSize.width <= 0 || boxSize.height <= 0) return@LaunchedEffect
+        cameraBinding = true
+        applied = AppliedCamera()
+        live = RoiStats.EMPTY
+        frameW = 0; frameH = 0
+        result = null
+        val requestedQuality = captureQuality
+        val requestedViewport = boxSize
         controller.bind(
             lifecycleOwner, previewView, settings,
-            onFrame = { image ->
+            onFrame = frame@ { image ->
                 try {
+                    if (captureQuality != requestedQuality || boxSize != requestedViewport) return@frame
                     // 화면에 서는 방향 기준의 크기. 오버레이 좌표는 이걸로 맞춘다.
                     val rot = ((image.imageInfo.rotationDegrees % 360) + 360) % 360
                     val swap = rot == 90 || rot == 270
@@ -278,6 +291,7 @@ private fun Inspect(controller: CameraController) {
                     }
 
                     val s = Stats.analyze(image, r)
+                    if (captureQuality != requestedQuality || boxSize != requestedViewport) return@frame
                     live = s
                     applied = controller.applied
 
@@ -337,7 +351,13 @@ private fun Inspect(controller: CameraController) {
                     image.close()
                 }
             },
-            onReady = { caps = it }
+            onReady = {
+                caps = it
+                cameraBinding = false
+                if (it.boundQuality != requestedQuality) msg = "정밀 연결에 실패해 표준 화질로 연결했습니다"
+            },
+            quality = requestedQuality,
+            onError = { cameraBinding = false; msg = it }
         )
     }
 
@@ -385,7 +405,8 @@ private fun Inspect(controller: CameraController) {
             }
             val verdict = if (resultIssue != null) Verdict.RECHECK else overallVerdict(typeResults.map { it.verdict })
             saveInspection(InspectionRecord(sweepId, sweepStartedAt, Store.timestamp(), sweepDur,
-                sweepFace, sweepNote, appVersion, sweepProfile, verdict, resultIssue, validFrames, motion, typeResults))
+                sweepFace, sweepNote, appVersion, sweepProfile, verdict, resultIssue, validFrames, motion, typeResults,
+                captureQuality.key, caps.boundQuality.key))
         }
         evidenceCollector = null
 
@@ -435,7 +456,8 @@ private fun Inspect(controller: CameraController) {
     // 표시할 점수: 검사가 끝났으면 그 결과, 아니면 지금 화면의 값
     val shown: List<Double> = result ?: if (sweeping) peaks else TYPES.map { it.score(live) }
     val currentProfile = captureProfile(controller, settings, caps, frameW, frameH)
-    val cameraReady = settings.locked && applied.aeOff && applied.afOff && (applied.awbOff || applied.awbLocked)
+    val cameraReady = !cameraBinding && frameW > 0 && frameH > 0 && settings.locked &&
+        applied.aeOff && applied.afOff && (applied.awbOff || applied.awbLocked)
     val verdicts = TYPES.mapIndexed { i, t ->
         if (modelProfiles[t] != currentProfile) Verdict.NOT_READY else models.getValue(t).judge(shown[i])
     }
@@ -460,7 +482,6 @@ private fun Inspect(controller: CameraController) {
     Column(Modifier.fillMaxSize()) {
 
         // ─────────── 카메라 ───────────
-        var boxSize by remember { mutableStateOf(Size.Zero) }
         Box(
             Modifier
                 .fillMaxWidth()
@@ -533,6 +554,13 @@ private fun Inspect(controller: CameraController) {
                 }
             }
 
+            if (screen == Screen.INSPECT) OutlinedButton(
+                onClick = { cameraBinding = true; largePreview = !largePreview },
+                enabled = !sweeping && !savingInspection && !cameraBinding,
+                modifier = Modifier.align(Alignment.TopEnd).padding(8.dp),
+                colors = ButtonDefaults.outlinedButtonColors(containerColor = Color(0xD9000000), contentColor = Color.White)
+            ) { Text(if (largePreview) "기본 화면" else "카메라 크게", fontSize = 12.sp) }
+
             if (!autoTrack) {
                 Row(
                     Modifier.align(Alignment.BottomEnd).padding(10.dp),
@@ -551,10 +579,18 @@ private fun Inspect(controller: CameraController) {
         }
 
         // ─────────── 패널 ───────────
+        if (largePreview && screen == Screen.INSPECT) {
+            Button(onClick = { startSweep(Screen.INSPECT, inspectSec, activeTypes, currentProfile) },
+                enabled = !sweeping && !savingInspection && cameraReady,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp).height(48.dp)) {
+                Text(if (savingInspection) "결과 사진 저장 중…" else if (sweeping) "검사 중 ${sweepLeft}초"
+                    else "검사 시작 (${inspectSec}초)")
+            }
+        }
         Column(
             Modifier
                 .fillMaxWidth()
-                .heightIn(max = 410.dp)
+                .heightIn(max = if (largePreview) 150.dp else 410.dp)
                 .verticalScroll(rememberScrollState())
                 .background(PANEL)
                 .padding(horizontal = 12.dp, vertical = 8.dp),
@@ -592,7 +628,7 @@ private fun Inspect(controller: CameraController) {
                 }
                 if (settings.locked) {
                     OutlinedButton(
-                        enabled = !sweeping,
+                        enabled = !sweeping && !cameraBinding && frameW > 0,
                         onClick = {
                             settings = settings.copy(locked = false)
                             controller.updateManual(settings)
@@ -602,7 +638,7 @@ private fun Inspect(controller: CameraController) {
                     ) { Text("자동", fontSize = 13.sp) }
                 } else {
                     Button(
-                        enabled = !sweeping,
+                        enabled = !sweeping && !cameraBinding && frameW > 0,
                         onClick = {
                             settings = controller.currentAsManual(settings)
                             controller.updateManual(settings)
@@ -615,6 +651,25 @@ private fun Inspect(controller: CameraController) {
                     ) { Text("현재 상태로 고정", fontSize = 13.sp, fontWeight = FontWeight.Bold) }
                 }
             }
+
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("화질", color = DIM, fontSize = 12.sp)
+                CaptureQuality.values().forEach { quality ->
+                    FilterChip(captureQuality == quality, onClick = {
+                        if (captureQuality != quality) {
+                            captureQuality = quality
+                            Prefs.setCaptureQuality(context, quality)
+                            applied = AppliedCamera(); cameraBinding = true
+                            msg = "${quality.label} 화질 연결 중 · 해상도가 달라지면 판정 기준을 다시 확인하세요"
+                        }
+                    }, enabled = !sweeping && !savingInspection && !cameraBinding, label = { Text(quality.label) })
+                }
+            }
+            Text(if (cameraBinding) "카메라 화질 준비 중…" else
+                "연결 ${caps.boundQuality.label} · 수신 ${caps.analysisWidth}×${caps.analysisHeight} · 저장 ${frameW}×${frameH}",
+                color = DIM, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+            if (captureQuality == CaptureQuality.DETAIL) Text("정밀은 2560×1920 요청 · 기기 선택 해상도·처리 속도는 달라질 수 있습니다",
+                color = DIM, fontSize = 11.sp)
 
             val warn = when {
                 tooDark -> "화면이 너무 어둡습니다. 조명을 켜세요"
@@ -730,7 +785,7 @@ private fun Inspect(controller: CameraController) {
 
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(
-                        onClick = { screen = Screen.ENROLL; result = null; msg = "" },
+                        onClick = { largePreview = false; screen = Screen.ENROLL; result = null; msg = "" },
                         enabled = !sweeping,
                         modifier = Modifier.weight(1f).height(44.dp),
                         colors = ButtonDefaults.buttonColors(

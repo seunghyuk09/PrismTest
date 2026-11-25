@@ -99,4 +99,6 @@ data class InspectionTypeResult(val type: DefectType, val score: Double, val ver
 data class InspectionRecord(val id: String, val startedAt: String, val completedAt: String,
     val seconds: Int, val face: Face, val note: String, val appVersion: String,
     val profile: String, val verdict: Verdict, val issue: String?, val validFrames: Int,
-    val motion: Double, val types: List<InspectionTypeResult>)
+    val motion: Double, val types: List<InspectionTypeResult>,
+    val requestedQuality: String = CaptureQuality.STANDARD.key,
+    val boundQuality: String = CaptureQuality.STANDARD.key)

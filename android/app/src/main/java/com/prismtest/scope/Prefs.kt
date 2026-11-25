@@ -29,6 +29,9 @@ object Prefs {
     fun autoTrack(c: Context) = p(c).getBoolean("auto_track", false)
     fun setAutoTrack(c: Context, v: Boolean) = p(c).edit().putBoolean("auto_track", v).apply()
 
+    fun captureQuality(c: Context) = CaptureQuality.of(p(c).getString("capture_quality", null))
+    fun setCaptureQuality(c: Context, v: CaptureQuality) = p(c).edit().putString("capture_quality", v.key).apply()
+
     fun activeTypes(c: Context): Set<DefectType> {
         val keys = p(c).getStringSet("active_types_v1", null) ?: setOf(DefectType.DIG.key)
         return DefectType.values().filter { it.key in keys }.toSet().ifEmpty { setOf(DefectType.DIG) }

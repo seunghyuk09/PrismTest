@@ -19,6 +19,7 @@ object InspectionJson {
             .put("started_at", record.startedAt).put("completed_at", record.completedAt)
             .put("duration_seconds", record.seconds).put("face", record.face.key).put("face_label", record.face.label)
             .put("note", record.note).put("app_version", record.appVersion).put("camera_profile", record.profile)
+            .put("capture_quality_requested", record.requestedQuality).put("capture_quality_bound", record.boundQuality)
             .put("verdict", record.verdict.name).put("verdict_label", record.verdict.label)
             .put("issue", nullable(record.issue)).put("valid_frames", record.validFrames).put("motion", record.motion)
             .put("coordinate_space", "Normalized cropped display frame, before the annotated image footer; not millimetres.")

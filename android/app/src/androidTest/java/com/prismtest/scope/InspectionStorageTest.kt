@@ -137,4 +137,28 @@ class InspectionStorageTest {
             assertEquals("Failed save must leave no partial images/report", 0, it.count)
         }
     }
+
+    @Test fun detailSourceIsSavedWithoutDownscalingAndRotationPreservesItsPixels() {
+        val pixels = ByteArray(2560 * 1920) { 28 }
+        pixels[70 * 2560 + 90] = 220.toByte()
+        val image = GraySnapshot(2560, 1920, 90, pixels)
+        val frame = EvidenceFrame(image, 999L, Store.timestamp(), Roi(.5f,.5f,.4f),
+            RoiStats.EMPTY.copy(pixels = pixels.size), AppliedCamera(), ManualSettings(), "detail-test-profile")
+        val request = record(frame, 0.0).copy(requestedQuality = "detail", boundQuality = "detail")
+        val saved = InspectionStorage.save(context, request)
+        try {
+            val json = read(saved)
+            assertEquals("detail", json.getString("capture_quality_requested"))
+            val t = json.getJSONArray("types").getJSONObject(0)
+            val stored = t.getJSONObject("frame")
+            assertEquals(1920, stored.getInt("display_width")); assertEquals(2560, stored.getInt("display_height"))
+            val files = t.getJSONObject("photos")
+            val original = context.contentResolver.openInputStream(Uri.parse(files.getString("original_uri")))!!.use {
+                requireNotNull(BitmapFactory.decodeStream(it))
+            }
+            assertEquals(1920, original.width); assertEquals(2560, original.height)
+            assertEquals(220, original.getPixel(1919 - 70, 90) and 255)
+            original.recycle()
+        } finally { cleanup(saved) }
+    }
 }
