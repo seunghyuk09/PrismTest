@@ -1,0 +1,38 @@
+{
+  "package": "com.prismtest.scope",
+  "version": "0.1.21",
+  "versionCode": 21,
+  "apk_bytes": 22516904,
+  "apk_sha256": "e930feb30531b464547cef391d1394f687c999d446af0a67e41f1ebc1c42f9e2",
+  "signer_sha256": "a45a9748c46959fe332d743fe7f9af7b63638a97385b9da2e2ca006b99b83de5",
+  "jvm_tests": {
+    "tests": 44,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "repository": "https://github.com/seunghyuk09/PrismTest",
+  "base_commit": "a31bd933986b96b1edbd2546791b911ae2050ece",
+  "source_note": "The commit containing this artifact includes the corresponding application source.",
+  "native_abis": [
+    "arm64-v8a",
+    "x86_64"
+  ],
+  "android_instrumentation": {
+    "release_apk": true,
+    "environment": "Android 11 API 30 x86_64 software emulator",
+    "tests": 3,
+    "failures": 0,
+    "checks": [
+      "Save the real analyzed fixture frame as original/marked PNG and JSON, read pixels back, and open the result viewer without camera permission",
+      "Save recheck JSON without inventing a photo when there is no frame",
+      "Rollback newly-created media rows when saving the record fails"
+    ]
+  },
+  "physical_camera_tested": false,
+  "image_paths": [
+    "Pictures/PrismScope/Results"
+  ],
+  "report_path": "Documents/PrismScope/Results",
+  "location_scope": "Dig candidates on each type-specific peak frame; other types show the analysis ROI. Candidate circles do not establish physical size or confirmed material defects."
+}

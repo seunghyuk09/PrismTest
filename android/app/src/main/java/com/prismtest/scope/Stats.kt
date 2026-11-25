@@ -198,12 +198,8 @@ object Stats {
         val offset = buf.position() + crop.top * rowStride + crop.left * pixStride
         if (w <= 2 || h <= 2) return RoiStats.EMPTY
 
-        val (bx, by) = toBuffer(roi.cx, roi.cy, image.imageInfo.rotationDegrees)
-        val halfPx = (roi.size * minOf(w, h) / 2f).coerceAtLeast(2f)
-        val l = (bx * w - halfPx).toInt().coerceIn(0, w - 2)
-        val t = (by * h - halfPx).toInt().coerceIn(0, h - 2)
-        val r = (bx * w + halfPx).toInt().coerceIn(l + 1, w - 1)
-        val b = (by * h + halfPx).toInt().coerceIn(t + 1, h - 1)
+        val bounds = RoiGeometry.buffer(roi, w, h, image.imageInfo.rotationDegrees)
+        val l = bounds.left; val t = bounds.top; val r = bounds.right; val b = bounds.bottom
 
         fun px(x: Int, y: Int): Int = buf.get(offset + y * rowStride + x * pixStride).toInt() and 0xFF
 

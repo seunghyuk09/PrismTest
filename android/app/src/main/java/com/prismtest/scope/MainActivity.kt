@@ -42,7 +42,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.concurrent.Executors
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -138,6 +143,7 @@ private fun Root(controller: CameraController) {
 private fun Inspect(controller: CameraController) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
+    val saveScope = rememberCoroutineScope()
 
     var settings by remember { mutableStateOf(ManualSettings()) }
     var caps by remember { mutableStateOf(CameraCaps()) }
@@ -186,6 +192,14 @@ private fun Inspect(controller: CameraController) {
     var profileChanged by remember { mutableStateOf(false) }
     var resetType by remember { mutableStateOf<DefectType?>(null) }
     var resetAll by remember { mutableStateOf(false) }
+    var evidenceCollector by remember { mutableStateOf<PeakFrameCollector<DefectType, EvidenceFrame>?>(null) }
+    var sweepId by remember { mutableStateOf("") }
+    var sweepStartedAt by remember { mutableStateOf("") }
+    var sweepFace by remember { mutableStateOf(Face.ALL) }
+    var sweepNote by remember { mutableStateOf("") }
+    var savingInspection by remember { mutableStateOf(false) }
+    var retryInspection by remember { mutableStateOf<InspectionRecord?>(null) }
+    var lastInspectionUri by remember { mutableStateOf(Prefs.lastInspection(context)) }
 
     var note by remember { mutableStateOf("") }
     var face by remember { mutableStateOf(Prefs.face(context)) }
@@ -205,6 +219,38 @@ private fun Inspect(controller: CameraController) {
         // FIT 으로 두면 세로 영상이 가로로 납작한 프리뷰 칸에 맞춰 축소되어
         // 프리즘이 손톱만 하게 보인다. 가운데를 잘라 채우는 편이 조준에 낫다.
         PreviewView(context).apply { scaleType = PreviewView.ScaleType.FILL_CENTER }
+    }
+
+    fun saveInspection(record: InspectionRecord) {
+        if (savingInspection) return
+        savingInspection = true
+        retryInspection = null
+        msg = "결과 사진 자동 저장 중…"
+        saveScope.launch {
+            try {
+                val saved = withContext(Dispatchers.IO) { InspectionStorage.save(context, record) }
+                Prefs.setLastInspection(context, saved.reportUri)
+                lastInspectionUri = saved.reportUri
+                msg = "결과 사진 ${saved.imageCount}장과 검사 기록 자동 저장됨"
+                if (lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
+                    InspectionResultActivity.open(context, saved.reportUri)
+                }
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (error: Exception) {
+                retryInspection = record
+                msg = "자동 저장 실패: ${error.message ?: "저장 공간을 확인하세요"} · 다시 저장할 수 있습니다"
+            } finally { savingInspection = false }
+        }
+    }
+
+    fun startSweep(mode: Screen, seconds: Int, types: Set<DefectType>, profile: String) {
+        sweepDur = seconds; sweepMode = mode; sweepTypes = types.toSet(); sweepProfile = profile
+        sweepId = Store.newInspectionId(); sweepStartedAt = Store.timestamp()
+        sweepFace = face; sweepNote = note
+        evidenceCollector = PeakFrameCollector(types)
+        retryInspection = null
+        profileChanged = false
+        sweeping = true
     }
 
     LaunchedEffect(Unit) {
@@ -250,24 +296,17 @@ private fun Inspect(controller: CameraController) {
                         else -> null
                     }
 
-                    if (sweeping && frameIssue == null) {
+                    val collector = evidenceCollector
+                    if (sweeping && frameIssue == null && collector != null && collector.offer(
+                            sweepTypes.associateWith { it.score(s) }) {
+                            EvidenceImages.capture(image, r, s, applied, settings, profile)
+                        }) {
                         validFrames++
                         lastValidAt = SystemClock.elapsedRealtime()
                         // 유형마다 최댓값을 따로 잡는다. 스크래치가 번쩍이는 각도와
                         // 얼룩이 가장 잘 보이는 각도는 달라서 한 프레임으로는 못 잡는다.
-                        val cur = peaks
-                        var changed = false
-                        val next = ArrayList<Double>(TYPES.size)
-                        for (i in TYPES.indices) {
-                            val v = TYPES[i].score(s)
-                            if (v > cur[i]) {
-                                next.add(v)
-                                changed = true
-                            } else {
-                                next.add(cur[i])
-                            }
-                        }
-                        if (changed) peaks = next
+                        val retained = collector.scores()
+                        peaks = TYPES.map { retained[it] ?: 0.0 }
                         // 프레임 간 밝기 변화로 "실제로 돌리고 있는지"를 본다.
                         if (lastMean >= 0) motion += abs(s.mean - lastMean)
                         lastMean = s.mean
@@ -276,6 +315,7 @@ private fun Inspect(controller: CameraController) {
                     } else if (sweeping) {
                         invalidReason = frameIssue ?: "영상 확인 필요"
                         lastMean = -1.0
+                        collector?.invalid { EvidenceImages.capture(image, r, s, applied, settings, profile) }
                     }
 
                     if (pendingSave) {
@@ -320,8 +360,9 @@ private fun Inspect(controller: CameraController) {
             delay(1000)
         }
         sweepLeft = 0
+        val evidence = evidenceCollector?.finish()
         sweeping = false
-        val final = peaks
+        val final = TYPES.map { evidence?.peaks?.get(it)?.score ?: 0.0 }
         result = final
         resultIssue = when {
             validFrames < maxOf(6, sweepDur * 2) -> invalidReason.ifBlank { "유효 영상이 부족합니다. 다시 관찰하세요" }
@@ -331,6 +372,22 @@ private fun Inspect(controller: CameraController) {
             motion < sweepDur * MOTION_PER_SEC -> "관찰 변화가 부족합니다. 여러 각도로 다시 확인하세요"
             else -> null
         }
+
+        if (sweepMode == Screen.INSPECT) {
+            val typeResults = TYPES.filter { it in sweepTypes }.map { type ->
+                val peak = evidence?.peaks?.get(type)
+                val model = models.getValue(type)
+                val modelVerdict = if (modelProfiles[type] != sweepProfile) Verdict.NOT_READY
+                    else model.judge(peak?.score ?: 0.0)
+                InspectionTypeResult(type, peak?.score ?: 0.0,
+                    if (resultIssue != null) Verdict.RECHECK else modelVerdict,
+                    modelVerdict, model, peak?.frame ?: evidence?.fallback, peak != null)
+            }
+            val verdict = if (resultIssue != null) Verdict.RECHECK else overallVerdict(typeResults.map { it.verdict })
+            saveInspection(InspectionRecord(sweepId, sweepStartedAt, Store.timestamp(), sweepDur,
+                sweepFace, sweepNote, appVersion, sweepProfile, verdict, resultIssue, validFrames, motion, typeResults))
+        }
+        evidenceCollector = null
 
         if (sweepMode == Screen.ENROLL) {
             // 등록은 되돌릴 수 없다. 못 믿을 측정이면 조용히 넣지 말고 이유를 말한다.
@@ -576,7 +633,9 @@ private fun Inspect(controller: CameraController) {
             }
 
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("검사할 유형 · 선택한 유형만 판정", color = DIM, fontSize = 11.sp, modifier = Modifier.weight(1f))
+                Text("검사 유형", color = DIM, fontSize = 11.sp, modifier = Modifier.weight(1f))
+                TextButton(onClick = { lastInspectionUri?.let { InspectionResultActivity.open(context, it) } },
+                    enabled = !sweeping && !savingInspection && lastInspectionUri != null) { Text("직전 결과") }
                 TextButton(onClick = { context.startActivity(Intent(context, ValidationActivity::class.java)) }, enabled = !sweeping) {
                     Text("검증기")
                 }
@@ -603,22 +662,24 @@ private fun Inspect(controller: CameraController) {
                 }
                 Button(
                     onClick = {
-                        sweepDur = inspectSec
-                        sweepMode = Screen.INSPECT
-                        sweepTypes = activeTypes
-                        sweepProfile = currentProfile
-                        profileChanged = false
-                        sweeping = true
+                        startSweep(Screen.INSPECT, inspectSec, activeTypes, currentProfile)
                     },
-                    enabled = !sweeping && cameraReady,
+                    enabled = !sweeping && !savingInspection && cameraReady,
                     modifier = Modifier.fillMaxWidth().height(54.dp),
                     shape = RoundedCornerShape(12.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = BLUE, contentColor = Color.White)
                 ) {
                     Text(
-                        if (sweeping) "검사 중 " + sweepLeft + "초" else "검사 시작 (" + inspectSec + "초)",
+                        if (savingInspection) "결과 사진 저장 중…"
+                        else if (sweeping) "검사 중 " + sweepLeft + "초" else "검사 시작 (" + inspectSec + "초)",
                         fontSize = 18.sp, fontWeight = FontWeight.Bold
                     )
+                }
+
+                if (savingInspection) LinearProgressIndicator(Modifier.fillMaxWidth())
+                retryInspection?.let { record ->
+                    OutlinedButton(onClick = { saveInspection(record) }, enabled = !savingInspection && !sweeping,
+                        modifier = Modifier.fillMaxWidth()) { Text("직전 결과 자동 저장 다시 시도") }
                 }
 
                 if (badScene != null) {
@@ -722,14 +783,10 @@ private fun Inspect(controller: CameraController) {
 
                 Button(
                     onClick = {
-                        sweepDur = enrollSec
-                        sweepMode = Screen.ENROLL
-                        sweepTypes = if (pick == 0) activeTypes else setOf(TYPES[pick - 1])
-                        sweepProfile = currentProfile
-                        profileChanged = false
-                        sweeping = true
+                        startSweep(Screen.ENROLL, enrollSec,
+                            if (pick == 0) activeTypes else setOf(TYPES[pick - 1]), currentProfile)
                     },
-                    enabled = !sweeping && cameraReady,
+                    enabled = !sweeping && !savingInspection && cameraReady,
                     modifier = Modifier.fillMaxWidth().height(54.dp),
                     shape = RoundedCornerShape(12.dp),
                     colors = ButtonDefaults.buttonColors(

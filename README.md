@@ -2,17 +2,20 @@
 
 ## 📱 안드로이드 앱 다운로드
 
-**[APK v20 다운로드 — 디그 검증기 포함](https://github.com/seunghyuk09/PrismTest/raw/refs/heads/claude/transparent-prism-surface-inspection-1s9537/downloads/PrismScope-v20-validator.apk)** · 약 22 MB
+**[APK v21 다운로드 — 결과 위치 표시·사진 자동 저장](https://github.com/seunghyuk09/PrismTest/raw/refs/heads/claude/transparent-prism-surface-inspection-1s9537/downloads/PrismScope-v21-auto-result.apk)** · 약 23 MB
 
-폰에서 위 링크를 눌러 APK를 내려받고 설치한다. 앱의 **검증기 → 내장 디그 예시 → 이 장면 비교하기**로 시작한다.
+폰에서 위 링크를 눌러 APK를 내려받고 설치한다. 검사가 끝나면 유형별 최고 점수 장면의 원본·표시 사진을 자동 저장하고 결과 화면을 연다. **직전 결과**로 다시 볼 수 있다.
+내장 디그 예시는 **검증기 → 내장 디그 예시 → 이 장면 비교하기**로 확인한다.
 카메라 권한 없이도 사진·영상 검증기를 사용할 수 있다.
 
-빌드·29개 단위 검증과 10개 코어 시나리오는 통과했다. 실제 폰의 카메라·조명·처리 속도는 폰에서 확인해야 한다.
-[사용 방법](docs/validation-v19.md) · [APK SHA-256 및 빌드 정보](downloads/PrismScope-v20-build-info.json)
+릴리스 빌드·44개 단위 테스트·Android 저장/결과 화면 테스트 3개가 통과했다. 실제 폰의 카메라·조명·처리 속도는 폰에서 확인해야 한다.
+[자동 저장 사용법](docs/auto-result-v21.md) · [검증기](docs/validation-v19.md) · [검사함·지그 구상](docs/fixture-budget.md) · [APK 빌드 정보](downloads/PrismScope-v21-build-info.json)
 
 ---
 
 **스마트폰 카메라로 투명 프리즘을 검사하는 시스템** — 조명·차광 보조 지그 + 안드로이드 앱.
+
+**v21:** 검사 종료 후 유형별 최고 점수 장면을 자동 저장하고, 디그 후보 위치 또는 분석 영역이 표시된 사진과 원본 휘도 사진을 비교한다. 서로 다른 각도의 좌표를 한 사진에 합치지 않는다.
 
 **v20:** 검증기 안내 글자와 버튼의 색을 조정해 어두운 화면에서 읽기 쉽게 했다. v19와 같은 서명으로 업데이트 설치할 수 있다.
 

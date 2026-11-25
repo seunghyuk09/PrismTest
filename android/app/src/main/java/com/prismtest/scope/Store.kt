@@ -25,7 +25,8 @@ object Store {
     // Preserve the old four-type CSV; never append a five-type row to its old header.
     private const val CSV_NAME = "prismscope_log_v2.csv"
 
-    private val stamp = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US)
+    fun newInspectionId(): String = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(Date()) +
+        "_" + java.util.UUID.randomUUID().toString().take(8)
 
     /**
      * 유형 열은 [DefectType] 에서 만든다. 유형을 추가하면 헤더와 행이 함께 늘어나므로
@@ -53,7 +54,7 @@ object Store {
 
     /** Y 평면을 그레이스케일 PNG 로 저장하고 파일명을 돌려준다. */
     fun saveFrame(context: Context, image: ImageProxy, tag: String): String? {
-        val name = "prism_${stamp.format(Date())}_$tag.png"
+        val name = "prism_${newInspectionId()}_$tag.png"
         val crop = image.cropRect
         val w = crop.width()
         val h = crop.height()
