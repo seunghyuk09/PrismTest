@@ -37,8 +37,8 @@ def main():
               'test_apk_sha256': digest(test_apk), 'physical_camera_tested': False, 'runs': []}
     try:
         assert report['apk_sha256'] == info['apk_sha256'], 'Download APK hash mismatch'
-        adb('wait-for-device', timeout=240)
-        deadline = time.monotonic() + 300
+        adb('wait-for-device', timeout=120)
+        deadline = time.monotonic() + 180
         while adb('shell', 'getprop', 'sys.boot_completed', timeout=20).strip() != '1':
             if time.monotonic() >= deadline:
                 raise RuntimeError('Android boot timed out')
@@ -81,6 +81,15 @@ def main():
         report.update(status='failed', error=str(error))
         raise
     finally:
+        if report.get('error'):
+            diagnostics = [report['error']]
+            try:
+                diagnostics.append(adb('devices', '-l', timeout=15, check=False))
+            except (subprocess.SubprocessError, OSError):
+                pass
+            emulator_log = OUT / 'emulator.log'
+            if emulator_log.exists(): diagnostics.append(emulator_log.read_text(errors='replace')[-3500:])
+            report['diagnostics'] = '\n'.join(diagnostics)
         (OUT / 'report.json').write_text(json.dumps(report, ensure_ascii=False, indent=2) + '\n')
         try:
             (OUT / 'android-crash.log').write_text(adb('shell', 'logcat', '-d', '-b', 'crash', timeout=20))
@@ -98,6 +107,11 @@ def main():
                         summary.write('\n```text\n' + log.read_text()[-6500:] + '\n```\n')
                 if report.get('error'):
                     summary.write('\nError: ' + report['error'] + '\n')
+            message = (report.get('diagnostics') or
+                       f"Passed {report.get('tests_passed', 0)} Android tests against APK SHA256 {report['apk_sha256']}")
+            message = message.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+            level = 'error' if report['status'] == 'failed' else 'notice'
+            print(f'::{level} title=Published Android APK validation::{message}', flush=True)
 
 
 if __name__ == '__main__':
