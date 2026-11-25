@@ -35,6 +35,8 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -153,7 +155,8 @@ private fun Inspect(controller: CameraController) {
     var largePreview by remember { mutableStateOf(false) }
     var boxSize by remember { mutableStateOf(Size.Zero) }
 
-    var roi by remember { mutableStateOf(Roi(0.5f, 0.5f, 0.45f)) }
+    var roiSize by remember { mutableFloatStateOf(Prefs.roiSize(context)) }
+    var roi by remember { mutableStateOf(Roi(0.5f, 0.5f, roiSize)) }
     var live by remember { mutableStateOf(RoiStats.EMPTY) }
     var frameW by remember { mutableIntStateOf(0) }
     var frameH by remember { mutableIntStateOf(0) }
@@ -278,13 +281,15 @@ private fun Inspect(controller: CameraController) {
                     frameH = if (swap) image.cropRect.width() else image.cropRect.height()
 
                     // 영역을 먼저 물체에 맞춘 뒤 그 영역을 잰다. 순서가 반대면 한 프레임 늦는다.
-                    var r = roiRef.value
+                    var r = roiRef.value.copy(size = roiSize)
                     if (autoTrack) {
                         val moved = Stats.locate(image, r)
                         tracked = moved != null
                         if (moved != null) {
-                            r = moved
-                            roi = moved
+                            // Follow the center while preserving the operator's chosen coverage.
+                            // Auto-tracking must not shrink the expanded inspection area again.
+                            r = moved.copy(size = roiSize)
+                            roi = r
                         }
                     } else {
                         tracked = false
@@ -297,7 +302,7 @@ private fun Inspect(controller: CameraController) {
 
                     val manualApplied = settings.locked && applied.aeOff && applied.afOff &&
                         (applied.awbOff || applied.awbLocked)
-                    val profile = captureProfile(controller, settings, caps, frameW, frameH)
+                    val profile = captureProfile(controller, settings, caps, frameW, frameH, r.size, autoTrack)
                     if (sweeping && profile != sweepProfile) profileChanged = true
                     val legacyMode = (if (sweeping) sweepTypes else activeTypes).any { it != DefectType.DIG }
                     val frameIssue = when {
@@ -455,7 +460,7 @@ private fun Inspect(controller: CameraController) {
 
     // 표시할 점수: 검사가 끝났으면 그 결과, 아니면 지금 화면의 값
     val shown: List<Double> = result ?: if (sweeping) peaks else TYPES.map { it.score(live) }
-    val currentProfile = captureProfile(controller, settings, caps, frameW, frameH)
+    val currentProfile = captureProfile(controller, settings, caps, frameW, frameH, roiSize, autoTrack)
     val cameraReady = !cameraBinding && frameW > 0 && frameH > 0 && settings.locked &&
         applied.aeOff && applied.afOff && (applied.awbOff || applied.awbLocked)
     val verdicts = TYPES.mapIndexed { i, t ->
@@ -499,15 +504,17 @@ private fun Inspect(controller: CameraController) {
                 }
         ) {
             AndroidView(factory = { previewView }, modifier = Modifier.fillMaxSize())
-            Canvas(Modifier.fillMaxSize()) {
+            Canvas(Modifier.fillMaxSize().semantics {
+                contentDescription = "검사 영역 ${(roiSize * 100).roundToInt()}%"
+            }) {
                 val rect = fitRect(size, frameW, frameH) ?: return@Canvas
                 val side = roi.size * minOf(rect[2], rect[3])
                 val left = rect[0] + roi.cx * rect[2] - side / 2
                 val top = rect[1] + roi.cy * rect[3] - side / 2
                 drawRect(FRAME, Offset(left, top), Size(side, side), style = Stroke(6f))
                 val tag = if (autoTrack) {
-                    if (tracked) "자동 추적" else "추적 대기 — 프리즘을 비추세요"
-                } else "검사 영역"
+                    if (tracked) "자동 추적 · ${(roi.size * 100).roundToInt()}%" else "추적 대기 — 프리즘을 비추세요"
+                } else "검사 영역 ${(roi.size * 100).roundToInt()}%"
                 drawContext.canvas.nativeCanvas.drawText(tag, left + 6f, top - 14f, labelPaint)
                 // These circles are localized scatter candidates, not confirmed material labels
                 // or physical dig diameters. They follow the same viewport as the analyzed pixels.
@@ -561,14 +568,17 @@ private fun Inspect(controller: CameraController) {
                 colors = ButtonDefaults.outlinedButtonColors(containerColor = Color(0xD9000000), contentColor = Color.White)
             ) { Text(if (largePreview) "기본 화면" else "카메라 크게", fontSize = 12.sp) }
 
-            if (!autoTrack) {
-                Row(
-                    Modifier.align(Alignment.BottomEnd).padding(10.dp),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    RoundBtn("−") { roi = roi.copy(size = (roi.size - 0.05f).coerceAtLeast(0.10f)) }
-                    RoundBtn("+") { roi = roi.copy(size = (roi.size + 0.05f).coerceAtMost(0.90f)) }
+            Row(
+                Modifier.align(Alignment.BottomEnd).padding(10.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                fun resize(delta: Float) {
+                    roiSize = (roiSize + delta).coerceIn(0.10f, 0.90f)
+                    Prefs.setRoiSize(context, roiSize)
+                    roi = roi.copy(size = roiSize)
                 }
+                RoundBtn("−", enabled = !sweeping && !savingInspection && !cameraBinding) { resize(-0.05f) }
+                RoundBtn("+", enabled = !sweeping && !savingInspection && !cameraBinding) { resize(0.05f) }
             }
 
             if (showHelp) {
@@ -905,7 +915,7 @@ private fun Inspect(controller: CameraController) {
                     Column(Modifier.weight(1f)) {
                         Text("검사 영역 자동 추적", fontWeight = FontWeight.Bold, fontSize = 14.sp)
                         Text(
-                            "밝은 띠나 손가락을 따라가면 끄고 검사면을 눌러 영역을 맞추세요.",
+                            "중심을 따라가며 선택한 크기를 유지합니다. 밝은 띠나 손가락을 따라가면 끄세요.",
                             fontSize = 11.sp, color = DIM
                         )
                     }
@@ -1143,16 +1153,17 @@ private fun Bar(fraction: Float, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun RoundBtn(text: String, onClick: () -> Unit) {
+private fun RoundBtn(text: String, enabled: Boolean = true, onClick: () -> Unit) {
     Box(
         Modifier.size(40.dp).clip(CircleShape).background(Color(0xB3000000)),
         contentAlignment = Alignment.Center
     ) {
         TextButton(
             onClick = onClick,
+            enabled = enabled,
             contentPadding = PaddingValues(0.dp),
             modifier = Modifier.fillMaxSize()
-        ) { Text(text, fontSize = 18.sp, color = Color.White) }
+        ) { Text(text, fontSize = 18.sp, color = if (enabled) Color.White else DIM) }
     }
 }
 
@@ -1302,6 +1313,6 @@ private fun buildCsvRow(
 }
 
 private fun captureProfile(controller: CameraController, settings: ManualSettings, caps: CameraCaps,
-                           width: Int, height: Int): String = CalibrationProfile.key(
+                           width: Int, height: Int, roiSize: Float, autoTrack: Boolean): String = CalibrationProfile.key(
     android.os.Build.MANUFACTURER + "/" + android.os.Build.MODEL, caps.cameraId, width, height,
-    settings.iso, settings.exposureNs, settings.focusDiopter, settings.zoom, controller.whiteBalanceProfile)
+    settings.iso, settings.exposureNs, settings.focusDiopter, settings.zoom, controller.whiteBalanceProfile, roiSize, autoTrack)

@@ -1,0 +1,44 @@
+{
+  "package": "com.prismtest.scope",
+  "version": "0.1.23",
+  "versionCode": 23,
+  "apk_bytes": 22566056,
+  "apk_sha256": "d6a3fff4c74b3b1fe46f6a2f6c742389c010107fc00d0d84ad6fc00730edf40e",
+  "signer_sha256": "a45a9748c46959fe332d743fe7f9af7b63638a97385b9da2e2ca006b99b83de5",
+  "signing": "Nondebuggable release build signed with the same repository test certificate as v22.",
+  "repository": "https://github.com/seunghyuk09/PrismTest",
+  "base_commit": "512383f07b8a04c4efe30b5c0dd6b3bb15d3c024",
+  "source_note": "The commit containing this artifact includes the corresponding application source.",
+  "jvm_tests": {
+    "tests": 51,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "native_abis": [
+    "arm64-v8a",
+    "x86_64"
+  ],
+  "roi": {
+    "previous_default_fraction": 0.45,
+    "default_fraction": 0.65,
+    "user_adjustable": true,
+    "persisted": true,
+    "auto_tracking": "Center follows the target; chosen size is preserved.",
+    "physical_mm_calibrated": false
+  },
+  "calibration_profile": "profile-v2 includes ROI size and tracking mode; older criteria are retained but cannot approve samples under changed conditions.",
+  "android_instrumentation": {
+    "execution": "pending_accelerated_ci",
+    "planned_tests": 5,
+    "tests_passed_in_v23": 0,
+    "workflow": ".github/workflows/android-validation.yml",
+    "tests_target_exact_published_apk": true
+  },
+  "physical_camera_tested": false,
+  "image_paths": [
+    "Pictures/PrismScope/Results"
+  ],
+  "report_path": "Documents/PrismScope/Results",
+  "image_note": "Unscaled cropped 8-bit luminance PNG from the analyzed peak frame; candidate circles are not confirmed defect identities or physical sizes."
+}

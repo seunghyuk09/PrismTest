@@ -14,4 +14,11 @@ class CalibrationProfileTest {
             assertNotEquals(key(), changed)
         }
     }
+    @Test fun changingCoverageOrTrackingModeRequiresMatchingCalibration() {
+        fun roiKey(size: Float, tracking: Boolean) = CalibrationProfile.key(
+            "Fold7", "0", 720, 960, 100, 10_000_000L, 4f, 2f, "1,1,1,1", size, tracking)
+        assertNotEquals(roiKey(.45f, false), roiKey(.65f, false))
+        assertNotEquals(roiKey(.65f, false), roiKey(.65f, true))
+        assertEquals(roiKey(.65f, true), roiKey(.65f, true))
+    }
 }

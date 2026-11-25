@@ -1,0 +1,56 @@
+name: Validate published Android APK
+
+on:
+  push:
+    paths:
+      - 'android/**'
+      - 'scripts/validate_android_apk.py'
+      - '.github/workflows/android-validation.yml'
+      - 'downloads/PrismScope-*.apk'
+      - 'downloads/latest-android.json'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  published-apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select published version
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          version = json.loads(Path('downloads/latest-android.json').read_text())['version_code']
+          assert isinstance(version, int) and version > 0
+          with open(os.environ['GITHUB_ENV'], 'a') as output:
+              output.write(f'BUILD_NUMBER={version}\n')
+          PY
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Build instrumentation APK
+        working-directory: android
+        run: ./gradlew --no-daemon --max-workers=2 --console=plain :app:assembleReleaseAndroidTest
+      - name: Set up accelerated Android 11
+        run: |
+          test -c /dev/kvm
+          sudo chmod a+rw /dev/kvm
+          sdkmanager 'emulator' 'system-images;android-30;default;x86_64'
+          echo no | avdmanager create avd --force --name PrismValidation --package 'system-images;android-30;default;x86_64' --device pixel_4
+          mkdir -p out/android-validation
+          "$ANDROID_HOME/emulator/emulator" -avd PrismValidation -no-window -no-audio -no-boot-anim -no-snapshot -no-metrics -accel on -gpu swiftshader_indirect -memory 3072 -cores 2 -camera-back emulated -camera-front none -skin 720x1280 -dpi-device 280 > out/android-validation/emulator.log 2>&1 &
+      - name: Verify exact download APK and run Android tests
+        run: python3 scripts/validate_android_apk.py
+      - name: Upload test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: published-apk-validation
+          path: out/android-validation/

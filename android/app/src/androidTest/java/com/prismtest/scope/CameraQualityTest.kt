@@ -59,11 +59,22 @@ class CameraQualityTest {
     @Test fun switchesQualityAndRebindsTheSharedViewportWhenPreviewGrows() {
         val context = instrumentation.targetContext
         val previous = Prefs.captureQuality(context)
+        val previousSize = Prefs.roiSize(context)
         instrumentation.uiAutomation.grantRuntimePermission(context.packageName, Manifest.permission.CAMERA)
         Prefs.setCaptureQuality(context, CaptureQuality.STANDARD)
+        Prefs.setRoiSize(context, .65f)
         try {
             ActivityScenario.launch(MainActivity::class.java).use {
                 val standard = stream("표준")
+                fun areaIs(percent: Int) = await("ROI $percent%") { list ->
+                    list.any { node -> node.contentDescription?.toString() == "검사 영역 $percent%" }
+                }
+                areaIs(65)
+                click("+")
+                areaIs(70)
+                assertEquals(.70f, Prefs.roiSize(context), .001f)
+                click("−")
+                areaIs(65)
                 click("정밀")
                 await("detail request visible") { list ->
                     list.any { it.text?.toString()?.startsWith("정밀은 2560×1920 요청") == true }
@@ -84,6 +95,9 @@ class CameraQualityTest {
                 val restored = stream("표준")
                 assertEquals("Standard source restored", standard.take(2), restored.take(2))
             }
-        } finally { Prefs.setCaptureQuality(context, previous) }
+        } finally {
+            Prefs.setCaptureQuality(context, previous)
+            Prefs.setRoiSize(context, previousSize)
+        }
     }
 }

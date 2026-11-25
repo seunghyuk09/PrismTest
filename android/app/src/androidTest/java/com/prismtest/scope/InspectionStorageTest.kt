@@ -8,6 +8,7 @@ import android.graphics.Rect
 import android.net.Uri
 import android.os.SystemClock
 import android.provider.MediaStore
+import android.util.Log
 import android.view.accessibility.AccessibilityNodeInfo
 import androidx.camera.core.ImageInfo
 import androidx.camera.core.ImageProxy
@@ -19,6 +20,7 @@ import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.lang.reflect.Proxy
+import java.io.File
 import java.nio.ByteBuffer
 
 @RunWith(AndroidJUnit4::class)
@@ -87,6 +89,12 @@ class InspectionStorageTest {
         return false
     }
 
+    private fun labels(node: AccessibilityNodeInfo?): List<String> {
+        if (node == null) return listOf("<no active window>")
+        return listOfNotNull(node.text?.toString(), node.contentDescription?.toString()) +
+            (0 until node.childCount).flatMap { index -> node.getChild(index)?.let(::labels) ?: emptyList() }
+    }
+
     @Test fun savesPeakFrameOriginalAndMarkedPhotosAndOpensResultWithoutCameraPermission() {
         val frame = fixture()
         val saved = InspectionStorage.save(context, record(frame))
@@ -114,7 +122,15 @@ class InspectionStorageTest {
                     if (contains(root, "저장된 검사 사진") && contains(root, "전체: 기준 없음")) { opened = true; break }
                     SystemClock.sleep(200)
                 }
-                assertTrue("Saved result and image must be shown", opened)
+                val visible = labels(automation.rootInActiveWindow).joinToString(" | ")
+                Log.i("PrismStorageTest", "Result UI: $visible")
+                automation.takeScreenshot()?.let { bitmap ->
+                    File(context.getExternalFilesDir(null), "result-viewer-test.png").outputStream().use { stream ->
+                        bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, stream)
+                    }
+                    bitmap.recycle()
+                }
+                assertTrue("Saved result and image must be shown; UI=$visible", opened)
             }
         } finally { cleanup(saved) }
     }

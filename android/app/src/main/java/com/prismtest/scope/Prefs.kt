@@ -29,6 +29,9 @@ object Prefs {
     fun autoTrack(c: Context) = p(c).getBoolean("auto_track", false)
     fun setAutoTrack(c: Context, v: Boolean) = p(c).edit().putBoolean("auto_track", v).apply()
 
+    fun roiSize(c: Context) = p(c).getFloat("roi_size_v23", 0.65f).coerceIn(0.10f, 0.90f)
+    fun setRoiSize(c: Context, v: Float) = p(c).edit().putFloat("roi_size_v23", v.coerceIn(0.10f, 0.90f)).apply()
+
     fun captureQuality(c: Context) = CaptureQuality.of(p(c).getString("capture_quality", null))
     fun setCaptureQuality(c: Context, v: CaptureQuality) = p(c).edit().putString("capture_quality", v.key).apply()
 
