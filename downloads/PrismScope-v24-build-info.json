@@ -1,0 +1,55 @@
+{
+  "package": "com.prismtest.scope",
+  "version": "0.1.24",
+  "versionCode": 24,
+  "release_stage": "candidate",
+  "apk_file": "PrismScope-v24-color4k-candidate1.apk",
+  "apk_bytes": 22585524,
+  "apk_sha256": "c7a72f80c3d7315cff940e4aa5e0ee6d206c3f3b3ad96a80fdf712328bf0f4c6",
+  "signer_sha256": "a45a9748c46959fe332d743fe7f9af7b63638a97385b9da2e2ca006b99b83de5",
+  "base_commit": "8bdabf6",
+  "source_note": "The application source and candidate APK are committed together. Promotion copies identical validated bytes.",
+  "jvm_tests": {
+    "tests": 57,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "native_abis": [
+    "arm64-v8a",
+    "x86_64"
+  ],
+  "quality_tiers": {
+    "HD": [
+      1280,
+      720
+    ],
+    "FHD": [
+      1920,
+      1080
+    ],
+    "QHD": [
+      2560,
+      1440
+    ],
+    "4K": [
+      3840,
+      2160
+    ]
+  },
+  "resolution_note": "Requested sizes are not guarantees. Actual received, preview and saved dimensions plus analysis FPS are displayed. Preview is reduced before analysis when a stream combination fails.",
+  "image_note": "Full same-frame YUV420 camera output retained with chroma, converted directly to rotated RGB, and saved as lossless color PNG. No JPEG intermediate or bitmap enlargement. Legacy grayscale records remain grayscale.",
+  "coordinate_space": "Candidates and clipped analysis ROI reprojected from the shared analysis crop onto the full saved display frame, before annotation footer.",
+  "android_instrumentation": {
+    "execution": "pending",
+    "planned_tests": 8,
+    "tests_passed_in_v24": 0,
+    "workflow": ".github/workflows/android-validation.yml"
+  },
+  "physical_camera_tested": false,
+  "image_paths": [
+    "Pictures/PrismScope/Results"
+  ],
+  "report_path": "Documents/PrismScope/Results",
+  "manual_csv": "Documents/PrismScope/prismscope_log_v3.csv"
+}

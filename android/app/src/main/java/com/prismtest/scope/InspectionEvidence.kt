@@ -91,7 +91,9 @@ class PeakFrameCollector<K, T>(keys: Set<K>) {
 
 data class EvidenceFrame(val image: GraySnapshot, val cameraTimestampNs: Long,
     val capturedAt: String, val roi: Roi, val stats: RoiStats, val camera: AppliedCamera,
-    val settings: ManualSettings, val profile: String)
+    val settings: ManualSettings, val profile: String,
+    val chroma: ChromaSnapshot? = null, val analysisCrop: FrameCrop? = null,
+    val analysisBounds: NormalizedBounds? = null)
 
 data class InspectionTypeResult(val type: DefectType, val score: Double, val verdict: Verdict,
     val modelVerdict: Verdict, val model: DefectModel, val frame: EvidenceFrame?, val validPeak: Boolean)
@@ -100,5 +102,5 @@ data class InspectionRecord(val id: String, val startedAt: String, val completed
     val seconds: Int, val face: Face, val note: String, val appVersion: String,
     val profile: String, val verdict: Verdict, val issue: String?, val validFrames: Int,
     val motion: Double, val types: List<InspectionTypeResult>,
-    val requestedQuality: String = CaptureQuality.STANDARD.key,
-    val boundQuality: String = CaptureQuality.STANDARD.key)
+    val requestedQuality: String = CaptureQuality.FHD.key,
+    val boundQuality: String = CaptureQuality.FHD.key)

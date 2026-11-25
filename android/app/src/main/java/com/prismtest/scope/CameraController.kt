@@ -63,7 +63,9 @@ data class CameraCaps(
     val hardwareLevel: Int = -1,
     val supportsManualSensor: Boolean = false,
     val supportsManualPostProcessing: Boolean = false,
-    val boundQuality: CaptureQuality = CaptureQuality.STANDARD,
+    val boundQuality: CaptureQuality = CaptureQuality.FHD,
+    val previewWidth: Int = 0,
+    val previewHeight: Int = 0,
 ) {
     val hardwareLevelName: String
         get() = when (hardwareLevel) {
@@ -134,14 +136,16 @@ class CameraController(
                 it.red, it.greenEven, it.greenOdd, it.blue)
         } ?: "awb-locked"
 
+    @android.annotation.SuppressLint("RestrictedApi")
     fun bind(
         lifecycleOwner: LifecycleOwner,
         previewView: PreviewView,
         settings: ManualSettings,
         onFrame: (ImageProxy) -> Unit,
         onReady: (CameraCaps) -> Unit,
-        quality: CaptureQuality = CaptureQuality.STANDARD,
+        quality: CaptureQuality = CaptureQuality.FHD,
         onError: (String) -> Unit = {},
+        previewQuality: CaptureQuality = quality,
     ) {
         val generation = ++bindingGeneration
         camera = null
@@ -155,18 +159,24 @@ class CameraController(
             provider = p
             p.unbindAll()
 
-            // 프리뷰와 분석의 화면비를 4:3 으로 맞춘다.
-            // 두 스트림의 비가 다르면 ROI 오버레이 좌표가 어긋난다.
+            // Request the selected quality for both streams. The shared viewport, not
+            // a bitmap enlargement, aligns live analysis and annotations.
             val resSel = ResolutionSelector.Builder()
-                .setAspectRatioStrategy(AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY)
-                .setResolutionStrategy(ResolutionStrategy(Size(1920, 1440), ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER))
+                .setAspectRatioStrategy(AspectRatioStrategy.RATIO_16_9_FALLBACK_AUTO_STRATEGY)
+                .setResolutionStrategy(ResolutionStrategy(Size(previewQuality.target.width, previewQuality.target.height), ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER))
+                .setAllowedResolutionMode(ResolutionSelector.PREFER_HIGHER_RESOLUTION_OVER_CAPTURE_RATE)
                 .setResolutionFilter { sizes, _ ->
-                    val allowed = quality.bounded(sizes.map { FrameSize(it.width, it.height) }, preview = true).toSet()
+                    val allowed = previewQuality.bounded(sizes.map { FrameSize(it.width, it.height) }).toSet()
                     sizes.filter { FrameSize(it.width, it.height) in allowed }
                 }
                 .build()
 
+            // CameraX 1.4 otherwise retains its default 1080p preview ceiling.
+            // These builder settings are pinned to that dependency and verified in CI.
             val previewBuilder = Preview.Builder().setResolutionSelector(resSel)
+                .setMaxResolution(Size(CaptureQuality.UHD.target.width, CaptureQuality.UHD.target.height))
+                .setHighResolutionDisabled(false)
+                .setDynamicRange(androidx.camera.core.DynamicRange.SDR)
             val ext = Camera2Interop.Extender(previewBuilder)
             applyManual(ext, settings)
             ext.setSessionCaptureCallback(object : CameraCaptureSession.CaptureCallback() {
@@ -198,14 +208,14 @@ class CameraController(
             // Detail requests more real source pixels. No bitmap enlargement/sharpening is used
             // to manufacture evidence. Actual negotiated/cropped dimensions are shown in the UI.
             val analysisRes = ResolutionSelector.Builder()
-                .setAspectRatioStrategy(AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY)
+                .setAspectRatioStrategy(AspectRatioStrategy.RATIO_16_9_FALLBACK_AUTO_STRATEGY)
                 .setResolutionStrategy(
                     ResolutionStrategy(
                         Size(quality.target.width, quality.target.height),
                         ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER
                     )
                 )
-                .setAllowedResolutionMode(if (quality == CaptureQuality.DETAIL)
+                .setAllowedResolutionMode(if (quality != CaptureQuality.HD)
                     ResolutionSelector.PREFER_HIGHER_RESOLUTION_OVER_CAPTURE_RATE
                     else ResolutionSelector.PREFER_CAPTURE_RATE_OVER_HIGHER_RESOLUTION)
                 .setResolutionFilter { sizes, _ ->
@@ -216,6 +226,8 @@ class CameraController(
 
             val analysis = ImageAnalysis.Builder()
                 .setResolutionSelector(analysisRes)
+                .setMaxResolution(Size(CaptureQuality.UHD.target.width, CaptureQuality.UHD.target.height))
+                .setHighResolutionDisabled(false)
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                 .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_YUV_420_888)
                 .build()
@@ -232,12 +244,20 @@ class CameraController(
                 try {
                     val cam = p.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, group.build())
                     camera = cam
-                    caps = readCaps(cam, analysis).copy(boundQuality = quality)
+                    val previewSize = preview.resolutionInfo?.resolution
+                    caps = readCaps(cam, analysis).copy(boundQuality = quality,
+                        previewWidth = previewSize?.width ?: 0, previewHeight = previewSize?.height ?: 0)
                     updateManual(settings)
                     onReady(caps)
                 } catch (e: Exception) {
-                    if (quality == CaptureQuality.DETAIL) {
-                        bind(lifecycleOwner, previewView, settings, onFrame, onReady, CaptureQuality.STANDARD, onError)
+                    // Prefer retaining full-resolution evidence while lowering the preview
+                    // if the phone cannot run two high-resolution streams together.
+                    val lowerPreview = previewQuality.lower()
+                    val lowerAnalysis = quality.lower()
+                    if (lowerPreview != null) {
+                        bind(lifecycleOwner, previewView, settings, onFrame, onReady, quality, onError, lowerPreview)
+                    } else if (lowerAnalysis != null) {
+                        bind(lifecycleOwner, previewView, settings, onFrame, onReady, lowerAnalysis, onError, lowerAnalysis)
                     } else onError("카메라 연결 실패: ${e.message}")
                 }
             }

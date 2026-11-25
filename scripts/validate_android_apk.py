@@ -58,7 +58,7 @@ def main():
         package_info = adb('shell', 'dumpsys', 'package', PACKAGE)
         assert re.search(rf'versionCode={version}\b', package_info), 'Wrong installed version'
         report['installed_apk_sha256'] = installed_hash
-        for class_name, expected, permission in [('InspectionStorageTest', 4, 'revoke'),
+        for class_name, expected, permission in [('InspectionStorageTest', 7, 'revoke'),
                                                  ('CameraQualityTest', 1, 'grant')]:
             adb('shell', 'pm', permission, PACKAGE, 'android.permission.CAMERA')
             output = adb('shell', 'am', 'instrument', '-w', '-r', '-e', 'class',
@@ -72,7 +72,7 @@ def main():
                 raise RuntimeError(class_name + ' did not report the expected passing test count')
         sizes = adb('shell', 'logcat', '-d', '-s', 'PrismQualityTest:I', '*:S')
         (OUT / 'camera-streams.log').write_text(sizes)
-        report['camera_streams'] = re.findall(r'연결 (?:표준|정밀) · 수신 \d+×\d+ · 저장 \d+×\d+', sizes)
+        report['camera_streams'] = re.findall(r'수신 \d+×\d+ · 저장 \d+×\d+ / 프리뷰 \d+×\d+ · 검사화면 \d+×\d+ · 분석 \d+fps', sizes)
         report['tests_passed'] = sum(run['expected_tests'] for run in report['runs'])
         report['status'] = 'passed'
         adb('pull', '/sdcard/Android/data/' + PACKAGE + '/files/result-viewer-test.png',
@@ -83,6 +83,9 @@ def main():
     finally:
         if report.get('error'):
             diagnostics = [report['error']]
+            for run in report['runs']:
+                if not run['passed']:
+                    diagnostics.append((OUT / (run['class'] + '.log')).read_text()[-6500:])
             try:
                 diagnostics.append(adb('devices', '-l', timeout=15, check=False))
             except (subprocess.SubprocessError, OSError):

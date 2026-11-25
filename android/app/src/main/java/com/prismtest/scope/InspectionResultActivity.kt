@@ -115,12 +115,14 @@ private fun InspectionResultScreen(reportUri: String, onClose: () -> Unit) {
         result?.let { t ->
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 FilterChip(!showOriginal, { showOriginal = false }, label = { Text("의심 위치 표시") })
-                FilterChip(showOriginal, { showOriginal = true }, label = { Text("원본 휘도 사진") })
+                FilterChip(showOriginal, { showOriginal = true }, label = {
+                    Text(if (t.optJSONObject("frame")?.optString("pixel_format") == "YUV_420_888") "원본 컬러 사진" else "원본 휘도 사진")
+                })
             }
             Text("${if (t.optBoolean("valid_peak")) "해당 유형의 최고 점수 장면" else "진단용 장면 · 유효 영상 없음"} · 점수 ${String.format(Locale.US, "%.2f", t.optDouble("score"))}",
                 fontSize = 12.sp, color = Color(0xFFA6B7C3))
             t.optJSONObject("frame")?.let { frame ->
-                Text("원본 ${frame.optInt("display_width")}×${frame.optInt("display_height")}px · 휘도 PNG",
+                Text("원본 ${frame.optInt("display_width")}×${frame.optInt("display_height")}px · ${if (frame.optString("pixel_format") == "YUV_420_888") "컬러" else "휘도"} PNG",
                     fontSize = 12.sp, color = Color(0xFFA6B7C3))
             }
         }

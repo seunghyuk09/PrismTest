@@ -21,6 +21,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -160,6 +161,9 @@ private fun Inspect(controller: CameraController) {
     var live by remember { mutableStateOf(RoiStats.EMPTY) }
     var frameW by remember { mutableIntStateOf(0) }
     var frameH by remember { mutableIntStateOf(0) }
+    var savedW by remember { mutableIntStateOf(0) }
+    var savedH by remember { mutableIntStateOf(0) }
+    var analysisFps by remember { mutableIntStateOf(0) }
     var tracked by remember { mutableStateOf(false) }
 
     var screen by remember { mutableStateOf(Screen.INSPECT) }
@@ -194,6 +198,7 @@ private fun Inspect(controller: CameraController) {
     var lastValidAt by remember { mutableStateOf(0L) }
     var resultIssue by remember { mutableStateOf<String?>(null) }
     var invalidReason by remember { mutableStateOf("") }
+    var processingIssue by remember { mutableStateOf<String?>(null) }
     var sweepTypes by remember { mutableStateOf(activeTypes) }
     var sweepProfile by remember { mutableStateOf("") }
     var profileChanged by remember { mutableStateOf(false) }
@@ -243,6 +248,10 @@ private fun Inspect(controller: CameraController) {
                     InspectionResultActivity.open(context, saved.reportUri)
                 }
             } catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: OutOfMemoryError) {
+                retryInspection = record
+                msg = "사진 저장 메모리가 부족합니다. 다시 저장하거나 화질을 낮춰 새로 검사하세요"
+            }
             catch (error: Exception) {
                 retryInspection = record
                 msg = "자동 저장 실패: ${error.message ?: "저장 공간을 확인하세요"} · 다시 저장할 수 있습니다"
@@ -257,6 +266,7 @@ private fun Inspect(controller: CameraController) {
         evidenceCollector = PeakFrameCollector(types)
         retryInspection = null
         profileChanged = false
+        processingIssue = null
         sweeping = true
     }
 
@@ -266,9 +276,12 @@ private fun Inspect(controller: CameraController) {
         applied = AppliedCamera()
         live = RoiStats.EMPTY
         frameW = 0; frameH = 0
+        savedW = 0; savedH = 0; analysisFps = 0
         result = null
         val requestedQuality = captureQuality
         val requestedViewport = boxSize
+        var rateStarted = SystemClock.elapsedRealtime()
+        var rateFrames = 0
         controller.bind(
             lifecycleOwner, previewView, settings,
             onFrame = frame@ { image ->
@@ -279,6 +292,8 @@ private fun Inspect(controller: CameraController) {
                     val swap = rot == 90 || rot == 270
                     frameW = if (swap) image.cropRect.height() else image.cropRect.width()
                     frameH = if (swap) image.cropRect.width() else image.cropRect.height()
+                    savedW = if (swap) image.height else image.width
+                    savedH = if (swap) image.width else image.height
 
                     // 영역을 먼저 물체에 맞춘 뒤 그 영역을 잰다. 순서가 반대면 한 프레임 늦는다.
                     var r = roiRef.value.copy(size = roiSize)
@@ -298,6 +313,12 @@ private fun Inspect(controller: CameraController) {
                     val s = Stats.analyze(image, r)
                     if (captureQuality != requestedQuality || boxSize != requestedViewport) return@frame
                     live = s
+                    rateFrames++
+                    val rateNow = SystemClock.elapsedRealtime()
+                    if (rateNow - rateStarted >= 1000) {
+                        analysisFps = (rateFrames * 1000.0 / (rateNow - rateStarted)).roundToInt()
+                        rateStarted = rateNow; rateFrames = 0
+                    }
                     applied = controller.applied
 
                     val manualApplied = settings.locked && applied.aeOff && applied.afOff &&
@@ -339,15 +360,26 @@ private fun Inspect(controller: CameraController) {
 
                     if (pendingSave) {
                         pendingSave = false
+                        val sourceCrop = image.cropRect
+                        val crop = FrameCrop(sourceCrop.left, sourceCrop.top, sourceCrop.right, sourceCrop.bottom)
+                        val photoRoi = EvidenceCoordinates.roi(r, crop, image.width, image.height, rot)
+                        val photoStats = EvidenceCoordinates.stats(s, crop, image.width, image.height, rot)
+                        val photoBounds = EvidenceCoordinates.bounds(r, crop, image.width, image.height, rot)
+                        val frameCamera = applied; val frameSettings = settings
                         val file = Store.saveFrame(context, image, "cap")
                         Store.appendCsv(
                             context,
-                            buildCsvRow(note, face, s, result, models, controller.applied,
-                                settings, r, frameW, frameH, file ?: "", appVersion, resultIssue,
-                                if (result != null) sweepTypes else activeTypes, modelProfiles, profile)
+                            buildCsvRow(note, face, photoStats, result, models, frameCamera,
+                                frameSettings, photoRoi, savedW, savedH, file ?: "", appVersion, resultIssue,
+                                if (result != null) sweepTypes else activeTypes, modelProfiles, profile, crop, photoBounds)
                         )
                         msg = if (file != null) "저장됨" else "저장 실패"
                     }
+                } catch (_: OutOfMemoryError) {
+                    processingIssue = "선택한 화질을 처리할 메모리가 부족합니다. 화질을 낮춰 다시 검사하세요"
+                    live = RoiStats.EMPTY
+                    invalidReason = processingIssue!!
+                    msg = invalidReason
                 } catch (e: Exception) {
                     live = RoiStats.EMPTY
                     invalidReason = "영상 분석 오류 — 다시 시작해 주세요"
@@ -359,7 +391,7 @@ private fun Inspect(controller: CameraController) {
             onReady = {
                 caps = it
                 cameraBinding = false
-                if (it.boundQuality != requestedQuality) msg = "정밀 연결에 실패해 표준 화질로 연결했습니다"
+                if (it.boundQuality != requestedQuality) msg = "${requestedQuality.label} 연결에 실패해 ${it.boundQuality.label}로 연결했습니다"
             },
             quality = requestedQuality,
             onError = { cameraBinding = false; msg = it }
@@ -390,6 +422,7 @@ private fun Inspect(controller: CameraController) {
         val final = TYPES.map { evidence?.peaks?.get(it)?.score ?: 0.0 }
         result = final
         resultIssue = when {
+            processingIssue != null -> processingIssue
             validFrames < maxOf(6, sweepDur * 2) -> invalidReason.ifBlank { "유효 영상이 부족합니다. 다시 관찰하세요" }
             SystemClock.elapsedRealtime() - lastValidAt > 1500 -> "최신 영상이 없습니다. 카메라 상태를 확인하세요"
             !settings.locked -> "촬영 조건이 고정되지 않았습니다"
@@ -662,7 +695,8 @@ private fun Inspect(controller: CameraController) {
                 }
             }
 
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("화질", color = DIM, fontSize = 12.sp)
                 CaptureQuality.values().forEach { quality ->
                     FilterChip(captureQuality == quality, onClick = {
@@ -676,9 +710,11 @@ private fun Inspect(controller: CameraController) {
                 }
             }
             Text(if (cameraBinding) "카메라 화질 준비 중…" else
-                "연결 ${caps.boundQuality.label} · 수신 ${caps.analysisWidth}×${caps.analysisHeight} · 저장 ${frameW}×${frameH}",
+                "수신 ${caps.analysisWidth}×${caps.analysisHeight} · 저장 ${savedW}×${savedH}",
                 color = DIM, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
-            if (captureQuality == CaptureQuality.DETAIL) Text("정밀은 2560×1920 요청 · 기기 선택 해상도·처리 속도는 달라질 수 있습니다",
+            Text("프리뷰 ${caps.previewWidth}×${caps.previewHeight} · 검사화면 ${frameW}×${frameH} · 분석 ${analysisFps}fps",
+                color = DIM, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+            Text("${captureQuality.label} ${captureQuality.target.width}×${captureQuality.target.height} 요청 · 실제 해상도는 기기 지원에 따라 선택됩니다",
                 color = DIM, fontSize = 11.sp)
 
             val warn = when {
@@ -1256,6 +1292,7 @@ private fun buildCsvRow(
     cam: AppliedCamera, m: ManualSettings, roi: Roi, w: Int, h: Int,
     file: String, appVersion: String, resultIssue: String?, activeTypes: Set<DefectType>,
     modelProfiles: Map<DefectType, String?>, currentProfile: String,
+    analysisCrop: FrameCrop, analysisBounds: NormalizedBounds,
 ): String {
     fun q(v: String) = "\"" + v.replace("\"", "\"\"") + "\""
     val scores = result ?: TYPES.map { it.score(s) }
@@ -1309,6 +1346,8 @@ private fun buildCsvRow(
     }))
     cells.add(q(resultIssue ?: ""))
     cells.add(q(activeTypes.joinToString(";") { it.key }))
+    cells.add(q(listOf(analysisCrop.left, analysisCrop.top, analysisCrop.right, analysisCrop.bottom).joinToString(";")))
+    cells.add(q(listOf(analysisBounds.left, analysisBounds.top, analysisBounds.right, analysisBounds.bottom).joinToString(";")))
     return cells.joinToString(",")
 }
 

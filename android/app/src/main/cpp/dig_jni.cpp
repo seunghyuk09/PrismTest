@@ -2,6 +2,7 @@
 #include <jni.h>
 #include <cstdint>
 #include <vector>
+#include <new>
 
 extern "C" JNIEXPORT jdoubleArray JNICALL
 Java_com_prismtest_scope_NativeDig_analyze(JNIEnv* env, jobject, jobject buffer,
@@ -16,13 +17,18 @@ Java_com_prismtest_scope_NativeDig_analyze(JNIEnv* env, jobject, jobject buffer,
         jclass error = env->FindClass("java/lang/IllegalArgumentException");
         env->ThrowNew(error, "Invalid luminance plane bounds"); return nullptr;
     }
-    auto result = prism::detect_digs({data + offset, width, height, row_stride, pixel_stride});
-    std::vector<jdouble> values{result.score, result.masked_fraction, result.contrast_threshold,
-                               static_cast<double>(result.candidates.size())};
-    for (const auto& c : result.candidates) {
-        values.insert(values.end(), {c.x, c.y, c.radius, c.contrast, static_cast<double>(c.area)});
+    try {
+        auto result = prism::detect_digs({data + offset, width, height, row_stride, pixel_stride});
+        std::vector<jdouble> values{result.score, result.masked_fraction, result.contrast_threshold,
+                                   static_cast<double>(result.candidates.size())};
+        for (const auto& c : result.candidates) {
+            values.insert(values.end(), {c.x, c.y, c.radius, c.contrast, static_cast<double>(c.area)});
+        }
+        auto output = env->NewDoubleArray(static_cast<jsize>(values.size()));
+        if (output) env->SetDoubleArrayRegion(output, 0, static_cast<jsize>(values.size()), values.data());
+        return output;
+    } catch (const std::bad_alloc&) {
+        env->ThrowNew(env->FindClass("java/lang/OutOfMemoryError"), "Cannot allocate analysis buffers");
+        return nullptr;
     }
-    auto output = env->NewDoubleArray(static_cast<jsize>(values.size()));
-    if (output) env->SetDoubleArrayRegion(output, 0, static_cast<jsize>(values.size()), values.data());
-    return output;
 }

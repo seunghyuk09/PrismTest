@@ -3,7 +3,6 @@ package com.prismtest.scope
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
-import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.Typeface
 import androidx.camera.core.ImageProxy
@@ -13,23 +12,20 @@ import kotlin.math.max
 object EvidenceImages {
     fun capture(image: ImageProxy, roi: Roi, stats: RoiStats, camera: AppliedCamera,
                 settings: ManualSettings, profile: String): EvidenceFrame {
-        val crop = image.cropRect; val p = image.planes[0]
-        val gray = GraySnapshot.copy(p.buffer,
-            p.buffer.position() + crop.top * p.rowStride + crop.left * p.pixelStride,
-            p.rowStride, p.pixelStride, crop.width(), crop.height(), image.imageInfo.rotationDegrees)
-        return EvidenceFrame(gray, image.imageInfo.timestamp, Store.timestamp(), roi, stats, camera, settings, profile)
+        val c = image.cropRect
+        val crop = FrameCrop(c.left, c.top, c.right, c.bottom)
+        val snapshot = CameraSnapshots.copy(image)
+        val w = image.width; val h = image.height; val rot = snapshot.image.rotation
+        return EvidenceFrame(snapshot.image, image.imageInfo.timestamp, Store.timestamp(),
+            EvidenceCoordinates.roi(roi, crop, w, h, rot), EvidenceCoordinates.stats(stats, crop, w, h, rot),
+            camera, settings, profile, snapshot.chroma, crop, EvidenceCoordinates.bounds(roi, crop, w, h, rot))
     }
 
     fun original(frame: GraySnapshot): Bitmap {
-        val pixels = IntArray(frame.pixels.size) { at ->
-            val v = frame.pixels[at].toInt() and 255
-            Color.rgb(v, v, v)
-        }
-        val raw = Bitmap.createBitmap(pixels, frame.width, frame.height, Bitmap.Config.ARGB_8888)
-        if (frame.rotation == 0) return raw
-        return Bitmap.createBitmap(raw, 0, 0, raw.width, raw.height,
-            Matrix().apply { postRotate(frame.rotation.toFloat()) }, false).also { raw.recycle() }
+        return NativeColor.bitmap(frame, null)
     }
+
+    fun original(frame: EvidenceFrame): Bitmap = NativeColor.bitmap(frame.image, frame.chroma)
 
     /** Footer is outside the image, so its pixels and normalized candidate coordinates stay aligned. */
     fun annotated(original: Bitmap, record: InspectionRecord, result: InspectionTypeResult): Bitmap {
@@ -42,7 +38,7 @@ object EvidenceImages {
         val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE; strokeWidth = (w / 360f).coerceAtLeast(2f); color = Color.rgb(255, 200, 87)
         }
-        val roi = RoiGeometry.display(frame.roi, frame.image.width, frame.image.height, frame.image.rotation)
+        val roi = frame.analysisBounds ?: RoiGeometry.display(frame.roi, frame.image.width, frame.image.height, frame.image.rotation)
         canvas.drawRect(roi.left * w, roi.top * h, roi.right * w, roi.bottom * h, paint)
         if (result.type == DefectType.DIG) frame.stats.dig.spots.forEachIndexed { i, p ->
             paint.color = if (i == 0 && result.verdict == Verdict.FAIL) Color.rgb(255, 99, 115) else Color.rgb(255, 200, 87)

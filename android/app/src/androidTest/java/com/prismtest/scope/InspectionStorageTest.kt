@@ -3,6 +3,7 @@ package com.prismtest.scope
 import android.content.Context
 import android.content.Intent
 import android.graphics.BitmapFactory
+import android.graphics.Color
 import android.graphics.ImageFormat
 import android.graphics.Rect
 import android.net.Uri
@@ -26,6 +27,9 @@ import java.nio.ByteBuffer
 @RunWith(AndroidJUnit4::class)
 class InspectionStorageTest {
     private val context: Context get() = InstrumentationRegistry.getInstrumentation().targetContext
+
+    private fun assertRed(pixel: Int) = assertTrue("Expected red, RGB=${Color.red(pixel)},${Color.green(pixel)},${Color.blue(pixel)}",
+        Color.red(pixel) >= 250 && Color.green(pixel) < 3 && Color.blue(pixel) < 3)
 
     private fun fixture(): EvidenceFrame {
         val bitmap = BitmapFactory.decodeResource(context.resources, R.drawable.dig_reference)
@@ -176,5 +180,115 @@ class InspectionStorageTest {
             assertEquals(220, original.getPixel(1919 - 70, 90) and 255)
             original.recycle()
         } finally { cleanup(saved) }
+    }
+
+    private data class YuvFixture(val image: ImageProxy, val y: ByteBuffer, val u: ByteBuffer, val v: ByteBuffer,
+                                  val yStride: Int)
+
+    private fun colorFixture(w: Int, h: Int, rotation: Int, crop: Rect): YuvFixture {
+        val ys = w + 16; val cs = ((w + 1) / 2) * 2 + 16
+        val y = ByteBuffer.allocateDirect(5 + ys * h)
+        val u = ByteBuffer.allocateDirect(3 + cs * ((h + 1) / 2))
+        val v = ByteBuffer.allocateDirect(3 + cs * ((h + 1) / 2))
+        for (row in 0 until h) for (x in 0 until w) y.put(5 + row * ys + x, 81.toByte())
+        for (row in 0 until (h + 1) / 2) for (x in 0 until (w + 1) / 2) {
+            u.put(3 + row * cs + x * 2, 90.toByte()); v.put(3 + row * cs + x * 2, 240.toByte())
+        }
+        y.position(5); u.position(3); v.position(3)
+        fun plane(data: ByteBuffer, stride: Int, pixel: Int) = Proxy.newProxyInstance(
+            ImageProxy.PlaneProxy::class.java.classLoader, arrayOf(ImageProxy.PlaneProxy::class.java)) { _, method, _ ->
+            when(method.name) { "getBuffer" -> data; "getRowStride" -> stride; "getPixelStride" -> pixel
+                else -> error(method.name) }
+        } as ImageProxy.PlaneProxy
+        val planes = arrayOf(plane(y,ys,1),plane(u,cs,2),plane(v,cs,2))
+        val info = Proxy.newProxyInstance(ImageInfo::class.java.classLoader, arrayOf(ImageInfo::class.java)) { _, method, _ ->
+            when(method.name) { "getRotationDegrees" -> rotation; "getTimestamp" -> 987654321L; else -> error(method.name) }
+        } as ImageInfo
+        val image = Proxy.newProxyInstance(ImageProxy::class.java.classLoader, arrayOf(ImageProxy::class.java)) { _, method, _ ->
+            when(method.name) { "getPlanes" -> planes; "getWidth" -> w; "getHeight" -> h; "getCropRect" -> crop
+                "getImageInfo" -> info; "getFormat" -> ImageFormat.YUV_420_888; "getImage", "close" -> null
+                else -> error(method.name) }
+        } as ImageProxy
+        return YuvFixture(image,y,u,v,ys)
+    }
+
+    @Test fun full4kColorKeepsSourcePixelsAndReprojectsCroppedCandidateCoordinates() {
+        val source = colorFixture(3840,2160,90,Rect(384,216,3456,1944))
+        source.y.put(5 + 321 * source.yStride + 123,145.toByte())
+        val stats = RoiStats.EMPTY.copy(pixels = 100, dig = DigResult(3.0,
+            spots = listOf(DigSpot(.25f,.75f,.01f,.02f,70.0,4))))
+        val frame = EvidenceImages.capture(source.image,Roi(.5f,.5f,1f),stats,
+            AppliedCamera(),ManualSettings(),"color4k-test")
+        source.image.close()
+        source.y.put(5,16.toByte()); source.u.put(3,128.toByte()); source.v.put(3,128.toByte())
+        val saved = InspectionStorage.save(context,record(frame).copy(requestedQuality="4k",boundQuality="4k"))
+        try {
+            val type = read(saved).getJSONArray("types").getJSONObject(0)
+            val f = type.getJSONObject("frame")
+            assertEquals("YUV_420_888",f.getString("pixel_format"))
+            assertEquals(2160,f.getInt("display_width")); assertEquals(3840,f.getInt("display_height"))
+            assertEquals(384,f.getJSONArray("analysis_crop_buffer_xyxy").getInt(0))
+            val point = f.getJSONArray("dig_candidates").getJSONObject(0)
+            assertEquals(.3,point.getDouble("cx"),.00001); assertEquals(.7,point.getDouble("cy"),.00001)
+            val uri = Uri.parse(type.getJSONObject("photos").getString("original_uri"))
+            val bitmap = context.contentResolver.openInputStream(uri)!!.use { BitmapFactory.decodeStream(it) }
+            try {
+                assertEquals(2160,bitmap.width); assertEquals(3840,bitmap.height)
+                val red = bitmap.getPixel(2159,0)
+                assertRed(red)
+                val changed = bitmap.getPixel(1838,123)
+                assertEquals(74,Color.green(changed)); assertEquals(74,Color.blue(changed))
+            } finally { bitmap.recycle() }
+        } finally { cleanup(saved) }
+    }
+
+    @Test fun nativeColorConversionHonorsRotationMatrixRangeAndChromaPhase() {
+        for (rotation in listOf(0,90,180,270)) {
+            val frame = GraySnapshot(2,2,rotation,byteArrayOf(81,145.toByte(),81,145.toByte()))
+            val bitmap = NativeColor.bitmap(frame,ChromaSnapshot(1,1,byteArrayOf(90),byteArrayOf(240.toByte())))
+            try {
+                val x = if (rotation == 90 || rotation == 180) 1 else 0
+                val y = if (rotation == 180 || rotation == 270) 1 else 0
+                val red = bitmap.getPixel(x,y)
+                assertRed(red)
+            } finally { bitmap.recycle() }
+        }
+        for ((encoding, values) in listOf(YuvEncoding(1,true) to listOf(54,99,255),
+                                         YuvEncoding(2,true) to listOf(67,92,255))) {
+            val frame = GraySnapshot(2,2,0,ByteArray(4) { values[0].toByte() })
+            val bitmap = NativeColor.bitmap(frame,ChromaSnapshot(1,1,byteArrayOf(values[1].toByte()),
+                byteArrayOf(values[2].toByte()),encoding=encoding))
+            try {
+                val red = bitmap.getPixel(0,0)
+                assertRed(red)
+            } finally { bitmap.recycle() }
+        }
+        val phased = NativeColor.bitmap(GraySnapshot(2,2,0,ByteArray(4) {81}),
+            ChromaSnapshot(2,1,byteArrayOf(90,128.toByte()),byteArrayOf(240.toByte(),128.toByte()),phaseX=1))
+        try {
+            assertTrue(Color.red(phased.getPixel(0,0))>250)
+            val neutral = phased.getPixel(1,0)
+            assertEquals(Color.red(neutral),Color.green(neutral)); assertEquals(Color.green(neutral),Color.blue(neutral))
+        } finally { phased.recycle() }
+    }
+
+    @Test fun manualSnapshotAlsoSavesFullFrameColor() {
+        val source = colorFixture(4,2,270,Rect(1,0,3,2))
+        val name = requireNotNull(Store.saveFrame(context,source.image,"test_color"))
+        source.image.close()
+        val collection = MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+        val id = context.contentResolver.query(collection,arrayOf(MediaStore.Images.Media._ID),
+            "${MediaStore.Images.Media.DISPLAY_NAME} = ?",arrayOf(name),null)!!.use {
+            assertTrue(it.moveToFirst()); it.getLong(0)
+        }
+        val uri = android.content.ContentUris.withAppendedId(collection,id)
+        try {
+            val bitmap = context.contentResolver.openInputStream(uri)!!.use { BitmapFactory.decodeStream(it) }
+            try {
+                assertEquals(2,bitmap.width); assertEquals(4,bitmap.height)
+                val red = bitmap.getPixel(0,0)
+                assertRed(red)
+            } finally { bitmap.recycle() }
+        } finally { context.contentResolver.delete(uri,null,null) }
     }
 }

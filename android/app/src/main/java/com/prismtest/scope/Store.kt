@@ -3,7 +3,6 @@ package com.prismtest.scope
 import android.content.ContentValues
 import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.Matrix
 import android.provider.MediaStore
 import androidx.camera.core.ImageProxy
 import java.io.OutputStreamWriter
@@ -23,7 +22,7 @@ object Store {
     private const val DIR_IMG = "Pictures/PrismScope"
     private const val DIR_DOC = "Documents/PrismScope"
     // Preserve the old four-type CSV; never append a five-type row to its old header.
-    private const val CSV_NAME = "prismscope_log_v2.csv"
+    private const val CSV_NAME = "prismscope_log_v3.csv"
 
     fun newInspectionId(): String = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(Date()) +
         "_" + java.util.UUID.randomUUID().toString().take(8)
@@ -49,49 +48,38 @@ object Store {
                 "frameW", "frameH", "imageFile", "appVersion",
                 "dig_score_current", "dig_candidate_count", "dig_masked_fraction", "dig_candidates_xy", "result_issue",
                 "active_types",
+                "analysis_crop_buffer_xyxy", "analysis_roi_full_xyxy",
             )
         ).joinToString(",")
 
-    /** Y 평면을 그레이스케일 PNG 로 저장하고 파일명을 돌려준다. */
+    /** Save the full, same-frame camera color data as a lossless PNG. */
     fun saveFrame(context: Context, image: ImageProxy, tag: String): String? {
         val name = "prism_${newInspectionId()}_$tag.png"
-        val crop = image.cropRect
-        val w = crop.width()
-        val h = crop.height()
-        val plane = image.planes[0]
-        val buf = plane.buffer
-        val rowStride = plane.rowStride
-        val pixStride = plane.pixelStride
-        val offset = buf.position() + crop.top * rowStride + crop.left * pixStride
-
-        val pixels = IntArray(w * h)
-        for (y in 0 until h) {
-            val rowBase = y * rowStride
-            val outBase = y * w
-            for (x in 0 until w) {
-                val v = buf.get(offset + rowBase + x * pixStride).toInt() and 0xFF
-                pixels[outBase + x] = (0xFF shl 24) or (v shl 16) or (v shl 8) or v
-            }
-        }
-        val raw = Bitmap.createBitmap(pixels, w, h, Bitmap.Config.ARGB_8888)
-        val rotation = image.imageInfo.rotationDegrees
-        val bmp = if (rotation == 0) raw else Bitmap.createBitmap(raw, 0, 0, w, h,
-            Matrix().apply { postRotate(rotation.toFloat()) }, false).also { raw.recycle() }
+        val snapshot = CameraSnapshots.copy(image)
+        val bmp = NativeColor.bitmap(snapshot.image, snapshot.chroma)
 
         val values = ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, name)
             put(MediaStore.MediaColumns.MIME_TYPE, "image/png")
             put(MediaStore.MediaColumns.RELATIVE_PATH, DIR_IMG)
         }
-        val uri = context.contentResolver.insert(
-            MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values
-        ) ?: return null
+        var created: android.net.Uri? = null
         return try {
-            val out = context.contentResolver.openOutputStream(uri) ?: return null
+            val uri = context.contentResolver.insert(
+                MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values
+            ) ?: return null
+            created = uri
+            val out = context.contentResolver.openOutputStream(uri) ?: error("사진 저장 위치를 열지 못했습니다")
             val written = out.use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
-            if (written) name else null
+            if (written) name else {
+                context.contentResolver.delete(uri, null, null); created = null; null
+            }
         } catch (e: Exception) {
+            created?.let { runCatching { context.contentResolver.delete(it, null, null) } }
             null
+        } catch (error: OutOfMemoryError) {
+            created?.let { runCatching { context.contentResolver.delete(it, null, null) } }
+            throw error
         } finally {
             bmp.recycle()
         }

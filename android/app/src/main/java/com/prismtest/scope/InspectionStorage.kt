@@ -22,7 +22,7 @@ object InspectionJson {
             .put("capture_quality_requested", record.requestedQuality).put("capture_quality_bound", record.boundQuality)
             .put("verdict", record.verdict.name).put("verdict_label", record.verdict.label)
             .put("issue", nullable(record.issue)).put("valid_frames", record.validFrames).put("motion", record.motion)
-            .put("coordinate_space", "Normalized cropped display frame, before the annotated image footer; not millimetres.")
+            .put("coordinate_space", "Normalized saved display frame, before the annotated image footer; live captures retain the full source frame. Not millimetres.")
             .put("scope_note", "Each type retains its own peak frame. Dig circles are candidates, not confirmed defect identities. Other types show only the analysis ROI. Different angles are not merged.")
             .put("types", JSONArray(record.types.map { result ->
                 val type = JSONObject().put("key", result.type.key).put("label", result.type.label)
@@ -32,9 +32,14 @@ object InspectionJson {
                     .put("pass_below", nullable(result.model.band?.pass)).put("fail_at_or_above", nullable(result.model.band?.fail))
                     .put("location_mode", if (result.type == DefectType.DIG) "dig_candidates" else "analysis_roi_only")
                 result.frame?.let { f ->
-                    val roi = RoiGeometry.display(f.roi, f.image.width, f.image.height, f.image.rotation)
+                    val roi = f.analysisBounds ?: RoiGeometry.display(f.roi, f.image.width, f.image.height, f.image.rotation)
                     type.put("frame", JSONObject().put("camera_timestamp_ns", f.cameraTimestampNs).put("captured_at", f.capturedAt)
                         .put("display_width", f.image.displayWidth).put("display_height", f.image.displayHeight)
+                        .put("pixel_format", if (f.chroma == null) "GRAY_Y8" else "YUV_420_888")
+                        .put("color_encoding", nullable(f.chroma?.encoding?.label))
+                        .put("analysis_crop_buffer_xyxy", f.analysisCrop?.let {
+                            JSONArray(listOf(it.left, it.top, it.right, it.bottom))
+                        } ?: JSONObject.NULL)
                         .put("rotation", f.image.rotation).put("camera_profile", f.profile)
                         .put("roi_xyxy", JSONArray(listOf(roi.left, roi.top, roi.right, roi.bottom)))
                         .put("median", f.stats.median).put("sat_ratio", f.stats.satRatio)
@@ -82,7 +87,7 @@ object InspectionStorage {
                 val frame = type.frame ?: continue
                 val prefix = "prism_${record.id}_${type.type.key}"
                 val originalName = "${prefix}_original.png"; val annotatedName = "${prefix}_marked.png"
-                val original = EvidenceImages.original(frame.image)
+                val original = EvidenceImages.original(frame)
                 try {
                     val rawUri = writeImage(original, originalName)
                     val marked = EvidenceImages.annotated(original, record, type)
@@ -97,7 +102,7 @@ object InspectionStorage {
                 check(resolver.update(uri, ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }, null, null) > 0)
             }
             return SavedInspection(report.toString(), images.size * 2)
-        } catch (error: Exception) {
+        } catch (error: Throwable) {
             created.forEach { uri -> runCatching { resolver.delete(uri, null, null) } }
             throw error
         }
