@@ -1,6 +1,8 @@
 package com.prismtest.scope
 
-enum class FocusControl(val key: String) { AUTO_LOCK("af-lock"), MANUAL("manual") }
+enum class FocusControl(val key: String) {
+    CURRENT_LOCK("current-af-lock"), AUTO_LOCK("af-lock"), MANUAL("manual")
+}
 
 /** Snapshot only a confirmed lens hold. Unknown focus distance never becomes a lens request. */
 object FocusLockPolicy {
@@ -9,8 +11,8 @@ object FocusLockPolicy {
         autoModeAvailable && minimumDistance != 0f
 
     fun snapshot(base: ManualSettings, reading: AppliedCamera, caps: CameraCaps,
-                 lockId: String): ManualSettings? {
-        val locked = base.copy(locked = true, focusControl = FocusControl.AUTO_LOCK)
+                 lockId: String, control: FocusControl = FocusControl.AUTO_LOCK): ManualSettings? {
+        val locked = base.copy(locked = true, focusControl = control)
         if (!reading.focusHeld(locked, caps)) return null
         val iso = reading.iso?.takeIf { it > 0 } ?: return null
         val exposure = reading.exposureNs?.takeIf { it > 0 } ?: return null

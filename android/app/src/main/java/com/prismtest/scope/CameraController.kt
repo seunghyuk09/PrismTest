@@ -68,8 +68,9 @@ data class AppliedCamera(
                 afOff && requested.isFinite() && actual.isFinite() && requested >= 0f &&
                     abs(actual - requested) <= maxOf(.05f, requested * .02f)
             }
-            caps.supportsAutoFocus -> afMode == CaptureResult.CONTROL_AF_MODE_AUTO &&
-                afState == CaptureResult.CONTROL_AF_STATE_FOCUSED_LOCKED
+            caps.supportsAutoFocus -> afMode == (if (settings.focusControl == FocusControl.CURRENT_LOCK)
+                CaptureResult.CONTROL_AF_MODE_CONTINUOUS_PICTURE else CaptureResult.CONTROL_AF_MODE_AUTO) &&
+                    afState == CaptureResult.CONTROL_AF_STATE_FOCUSED_LOCKED
             else -> afOff // A genuinely fixed-focus camera has no AF operation to wait for.
         }
     }
@@ -89,6 +90,7 @@ data class CameraCaps(
     val supportsManualSensor: Boolean = false,
     val supportsManualPostProcessing: Boolean = false,
     val supportsAutoFocus: Boolean = false,
+    val supportsContinuousFocus: Boolean = false,
     val boundQuality: CaptureQuality = CaptureQuality.FHD,
     val previewWidth: Int = 0,
     val previewHeight: Int = 0,
@@ -120,7 +122,7 @@ data class ManualSettings(
     val exposureNs: Long = 16_000_000L,
     /** A missing distance is unknown; zero is a real infinity reading. Never substitute 4 D. */
     val focusDiopter: Float? = null,
-    val focusControl: FocusControl = FocusControl.AUTO_LOCK,
+    val focusControl: FocusControl = FocusControl.CURRENT_LOCK,
     val focusLockId: String = "",
     /**
      * 광학 배율. 프리즘이 화면에서 차지하는 비율을 결정한다.
@@ -153,6 +155,8 @@ class CameraController(
     private val mainHandler = Handler(Looper.getMainLooper())
     private var focusRequest = 0
     private var focusMeteringActive = false
+    private var currentFocusLockActive = false
+    private var captureOptionsGeneration = 0
     private var requestedZoom: Float? = null
     private var pendingFocus: ((ManualSettings?, String?) -> Unit)? = null
 
@@ -188,6 +192,8 @@ class CameraController(
         lastGains = null
         lastTransform = null
         focusMeteringActive = false
+        currentFocusLockActive = false
+        captureOptionsGeneration++
         requestedZoom = null
         val future = ProcessCameraProvider.getInstance(context)
         future.addListener({
@@ -307,11 +313,21 @@ class CameraController(
     /** 바인딩 후 수동값만 갱신한다. 재바인딩 없이 즉시 반영된다. */
     fun updateManual(s: ManualSettings) {
         val cam = camera ?: return
+        val cancelCurrent = currentFocusLockActive && !s.locked
         if (!s.locked || s.focusControl == FocusControl.MANUAL) {
             cancelPendingFocus(null)
             if (focusMeteringActive) cam.cameraControl.cancelFocusAndMetering()
             focusMeteringActive = false
+            currentFocusLockActive = false
         }
+        writeSettings(s, if (cancelCurrent) CaptureRequest.CONTROL_AF_TRIGGER_CANCEL else null)
+    }
+
+    /** A transient AF trigger is removed as soon as a capture acknowledges it. The generation
+     * guard prevents a delayed completion from overwriting a newer lock or manual adjustment. */
+    private fun writeSettings(s: ManualSettings, afTrigger: Int? = null) {
+        val cam = camera ?: return
+        val command = ++captureOptionsGeneration
         val b = CaptureRequestOptions.Builder()
         if (s.locked) {
             b.setCaptureRequestOption(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
@@ -334,6 +350,9 @@ class CameraController(
             // Some fixed lenses advertise AUTO modes despite a 0 D minimum focus distance.
             // They have no autofocus movement or FOCUSED_LOCKED state to wait for.
             b.setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
+        } else if ((s.locked && s.focusControl == FocusControl.CURRENT_LOCK) || afTrigger != null) {
+            b.setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+            b.setCaptureRequestOption(CaptureRequest.CONTROL_AF_TRIGGER, afTrigger ?: CaptureRequest.CONTROL_AF_TRIGGER_IDLE)
         }
         // Keep processing consistent before/after locking. Turning sharpening off only
         // at lock time made the view look softer even if the lens had not moved.
@@ -342,7 +361,14 @@ class CameraController(
         b.setCaptureRequestOption(CaptureRequest.CONTROL_SCENE_MODE, CaptureRequest.CONTROL_SCENE_MODE_DISABLED)
         b.setCaptureRequestOption(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE,
             CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
-        Camera2CameraControl.from(cam.cameraControl).captureRequestOptions = b.build()
+        val configured = Camera2CameraControl.from(cam.cameraControl).setCaptureRequestOptions(b.build())
+        if (afTrigger != null) configured.addListener({
+            if (command != captureOptionsGeneration || camera !== cam) return@addListener
+            try {
+                configured.get()
+                writeSettings(s)
+            } catch (error: Exception) { Log.w("PrismFocus", "AF trigger not acknowledged", error) }
+        }, ContextCompat.getMainExecutor(context))
 
         // 배율은 CaptureRequest 가 아니라 CameraControl 로 건다. 프리뷰와 분석
         // 버퍼에 함께 걸리므로 화면에서 본 크기가 그대로 측정 크기가 된다.
@@ -353,6 +379,54 @@ class CameraController(
             requestedZoom = zoom
             cam.cameraControl.setZoomRatio(zoom)
         }
+    }
+
+    /** Freeze a successfully focused continuous-AF lens without starting another focus sweep.
+     * Camera2 defines PASSIVE_FOCUSED + AF_TRIGGER_START as FOCUSED_LOCKED in this mode. */
+    fun holdCurrent(point: MeteringPoint, base: ManualSettings,
+                    onResult: (ManualSettings?, String?) -> Unit) {
+        if (caps.supportsAutoFocus && !caps.supportsContinuousFocus) {
+            lockAt(point, base, onResult)
+            return
+        }
+        val cam = camera ?: run { onResult(null, "카메라 연결을 기다리세요"); return }
+        updateManual(base.copy(locked = false))
+        val token = ++focusRequest
+        val generation = bindingGeneration
+        pendingFocus = onResult
+        val lockId = UUID.randomUUID().toString()
+        var beforeTrigger: AppliedCamera? = null
+        fun active() = token == focusRequest && generation == bindingGeneration && camera === cam
+        Log.i("PrismFocus", "Current hold requested: mode=${applied.afMode} state=${applied.afState} distance=${applied.focusDiopter}")
+        fun finish(snapshot: ManualSettings?, error: String?) {
+            if (!active()) return
+            val callback = pendingFocus ?: return
+            pendingFocus = null
+            focusRequest++
+            Log.i("PrismFocus", "Current hold ${if (snapshot != null) "confirmed" else "failed: $error"}: " +
+                "mode=${applied.afMode} state=${applied.afState} moving=${applied.lensMoving} distance=${applied.focusDiopter}")
+            if (snapshot == null) updateManual(base.copy(locked = false))
+            callback(snapshot, error)
+        }
+        fun confirm() {
+            if (!active()) return
+            val reading = applied
+            if (!caps.supportsAutoFocus || (beforeTrigger != null && reading !== beforeTrigger)) {
+                val snapshot = FocusLockPolicy.snapshot(base, reading, caps, lockId, FocusControl.CURRENT_LOCK)
+                if (snapshot != null) { finish(snapshot, null); return }
+            }
+            if (beforeTrigger == null && caps.supportsAutoFocus && !reading.lensMoving &&
+                reading.afMode == CaptureResult.CONTROL_AF_MODE_CONTINUOUS_PICTURE &&
+                reading.afState == CaptureResult.CONTROL_AF_STATE_PASSIVE_FOCUSED) {
+                beforeTrigger = reading
+                currentFocusLockActive = true
+                writeSettings(base.copy(locked = false), CaptureRequest.CONTROL_AF_TRIGGER_START)
+            }
+            mainHandler.postDelayed({ confirm() }, 50)
+        }
+        mainHandler.postDelayed({ finish(null,
+            "현재 초점을 확인하지 못했습니다. 프리즘이 선명하게 보이도록 거리를 조절하거나 초점 다시 맞춤을 누르세요") }, 8_000)
+        confirm()
     }
 
     /**
@@ -385,6 +459,9 @@ class CameraController(
     fun lockAt(point: MeteringPoint, base: ManualSettings,
                onResult: (ManualSettings?, String?) -> Unit) {
         val cam = camera ?: run { onResult(null, "카메라 연결을 기다리세요"); return }
+        // Switching from continuous to single AUTO resets its old lock. Clear interop AF
+        // overrides before CameraX submits its own AF trigger; do not pin a CANCEL over it.
+        currentFocusLockActive = false
         updateManual(base.copy(locked = false))
         val token = ++focusRequest
         val generation = bindingGeneration
@@ -392,7 +469,7 @@ class CameraController(
         var focusResultAtCompletion: AppliedCamera? = null
         val lockId = UUID.randomUUID().toString()
         Log.i("PrismFocus", "Lock requested: autofocus=${caps.supportsAutoFocus} minimum=${caps.minFocusDistance} " +
-            "point=${point.x},${point.y} mode=${applied.afMode} state=${applied.afState}")
+            "point=${point.x},${point.y} mode=${applied.afMode} state=${applied.afState} distance=${applied.focusDiopter}")
         fun active() = token == focusRequest && generation == bindingGeneration && camera === cam
         fun finish(snapshot: ManualSettings?, error: String?) {
             if (!active()) return
@@ -491,11 +568,15 @@ class CameraController(
             supportsAutoFocus = FocusLockPolicy.supportsAutoFocus(
                 info.getCameraCharacteristic(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES)
                     ?.contains(CaptureRequest.CONTROL_AF_MODE_AUTO) == true, minimumDistance),
+            supportsContinuousFocus = info.getCameraCharacteristic(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES)
+                ?.contains(CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE) == true,
         )
     }
 
     fun unbind() {
         cancelPendingFocus(null)
+        captureOptionsGeneration++
+        currentFocusLockActive = false
         bindingGeneration++
         provider?.unbindAll()
         camera = null

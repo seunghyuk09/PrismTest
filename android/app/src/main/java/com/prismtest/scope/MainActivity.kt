@@ -242,15 +242,16 @@ private fun Inspect(controller: CameraController) {
         onDispose { previewView.previewStreamState.removeObserver(observer) }
     }
 
-    fun lockFocus() {
+    fun lockFocus(refocus: Boolean = false) {
         val rect = fitRect(boxSize, frameW, frameH) ?: return
         val point = previewView.meteringPointFactory.createPoint(
             rect[0] + roi.cx * rect[2], rect[1] + roi.cy * rect[3])
-        settings = settings.copy(locked = false, focusControl = FocusControl.AUTO_LOCK)
+        settings = settings.copy(locked = false,
+            focusControl = if (refocus) FocusControl.AUTO_LOCK else FocusControl.CURRENT_LOCK)
         focusError = null
         focusLocking = true
-        msg = "초점을 맞추는 동안 프리즘과 폰을 움직이지 마세요"
-        controller.lockAt(point, settings) { locked, error ->
+        msg = "초점을 고정하는 동안 프리즘과 폰을 움직이지 마세요"
+        val onResult: (ManualSettings?, String?) -> Unit = { locked, error ->
             focusLocking = false
             if (locked != null) {
                 settings = locked
@@ -261,6 +262,8 @@ private fun Inspect(controller: CameraController) {
                 msg = error
             }
         }
+        if (refocus) controller.lockAt(point, settings, onResult)
+        else controller.holdCurrent(point, settings, onResult)
     }
 
     fun saveInspection(record: InspectionRecord) {
@@ -727,19 +730,19 @@ private fun Inspect(controller: CameraController) {
                         colors = ButtonDefaults.buttonColors(
                             containerColor = OK, contentColor = Color.Black
                         )
-                    ) { Text(if (focusLocking) "초점 맞추는 중…" else "초점 맞춰 고정", fontSize = 13.sp, fontWeight = FontWeight.Bold) }
+                    ) { Text(if (focusLocking) "초점 고정 중…" else "현재 초점 고정", fontSize = 13.sp, fontWeight = FontWeight.Bold) }
                 }
             }
 
             Row(verticalAlignment = Alignment.CenterVertically) {
                 val focusText = when {
-                    focusLocking -> "초점 맞추는 중 · 프리즘을 멈추세요"
+                    focusLocking -> "초점 확인 중 · 프리즘을 멈추세요"
                     applied.focusHeld(settings, caps) -> if (settings.focusControl == FocusControl.MANUAL)
                         "수동 초점 적용됨" else if (caps.supportsAutoFocus) "초점 잠금 확인됨" else "고정 초점 렌즈 확인됨"
                     settings.locked -> "초점 잠금 확인 중 · 검사 대기"
                     focusError != null -> focusError!!
                     !previewStreaming -> "프리뷰 준비 중 · 잠시 기다리세요"
-                    else -> "프리즘 모서리를 검사 영역 중앙에 놓고 고정하세요"
+                    else -> "프리즘이 선명하게 보일 때 현재 초점을 고정하세요"
                 }
                 Text(focusText, Modifier.weight(1f), fontSize = 11.sp,
                     color = if (applied.focusHeld(settings, caps)) OK else WARN)
@@ -749,7 +752,7 @@ private fun Inspect(controller: CameraController) {
                     controller.updateManual(settings)
                     msg = "초점 맞추기를 취소했습니다"
                 }) { Text("취소", fontSize = 12.sp) }
-                else if (settings.locked) TextButton(onClick = { lockFocus() },
+                else if (settings.locked || caps.supportsAutoFocus) TextButton(onClick = { lockFocus(refocus = true) },
                     enabled = !sweeping && !savingInspection && !cameraBinding && previewStreaming) {
                     Text("초점 다시 맞춤", fontSize = 12.sp)
                 }
@@ -1284,7 +1287,7 @@ private fun HelpOverlay(inspectSec: Int, onClose: () -> Unit) {
             listOf(
                 "1. 폰과 조명을 고정한다. 작은 차광 후드로 시작해도 된다",
                 "2. 어두운 검사면을 눌러 노란 영역을 맞춘다. 밝은 띠·손가락을 피한다",
-                "3. 「초점 맞춰 고정」 — 잠금 확인 후 같은 거리에서 검사한다",
+                "3. 「현재 초점 고정」 — 잠금 확인 후 같은 거리에서 검사한다",
                 "4. 「샘플 등록」에서 양품을 " + DefectModel.MIN_GOOD + "개 등록한다",
                 "5. 유형별 불량도 " + DefectModel.MIN_BAD + "개씩 등록하면 경계가 정확해진다",
                 "6. 「검사로 돌아가기」 → 「검사 시작 (" + inspectSec + "초)」",

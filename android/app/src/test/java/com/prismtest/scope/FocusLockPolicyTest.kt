@@ -29,6 +29,17 @@ class FocusLockPolicyTest {
         assertEquals("", snapshot.focusLockId)
     }
 
+    @Test fun currentFocusHoldRequiresALockedContinuousModeWithoutAnotherSweep() {
+        val reading = focused.copy(afMode = CaptureResult.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+        val held = requireNotNull(FocusLockPolicy.snapshot(previous, reading, caps, "current", FocusControl.CURRENT_LOCK))
+        assertEquals(FocusControl.CURRENT_LOCK, held.focusControl)
+        assertTrue(reading.focusHeld(held, caps))
+        assertFalse(focused.focusHeld(held, caps))
+        assertNull(FocusLockPolicy.snapshot(previous,
+            reading.copy(afState = CaptureResult.CONTROL_AF_STATE_PASSIVE_FOCUSED), caps, "current", FocusControl.CURRENT_LOCK))
+        assertEquals(reading.focusDiopter, held.focusDiopter)
+    }
+
     @Test fun missingDistanceNeverFallsBackToThePreviousSetting() {
         val snapshot = requireNotNull(lock(focused.copy(focusDiopter = null)))
         assertNull(snapshot.focusDiopter)

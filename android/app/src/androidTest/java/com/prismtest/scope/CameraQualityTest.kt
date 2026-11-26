@@ -50,12 +50,6 @@ class CameraQualityTest {
         val found = await("full color camera stream") { list ->
             val a = list.mapNotNull { full.matchEntire(it.text?.toString().orEmpty()) }.firstOrNull()
             val b = list.mapNotNull { view.matchEntire(it.text?.toString().orEmpty()) }.firstOrNull()
-            // The expanded camera leaves a 150dp scrolling controls panel. Focus guidance
-            // can put the second resolution line below its visible area; reveal it rather
-            // than interpreting an offscreen label as a stalled CameraX stream.
-            if (a != null && b == null) list.firstOrNull {
-                it.isScrollable && it.className?.toString() == "android.widget.ScrollView"
-            }?.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
             a != null && b != null && a.groupValues.drop(1).all { it.toInt() > 0 } &&
                 b.groupValues.drop(1).take(4).all { it.toInt() > 0 } &&
                 (previousCrop == null || b.groupValues.drop(3).take(2).map(String::toInt) != previousCrop)
@@ -66,6 +60,12 @@ class CameraQualityTest {
         val sizes=a.groupValues.drop(1).map(String::toInt)
         assertEquals("Saved frame must keep every source pixel", sizes[0].toLong()*sizes[1], sizes[2].toLong()*sizes[3])
         return sizes + b.groupValues.drop(3).take(2).map(String::toInt)
+    }
+
+    private fun scrollPanel(action: Int) {
+        await("scroll camera controls") { list -> list.firstOrNull {
+            it.isScrollable && it.className?.toString() == "android.widget.ScrollView"
+        }?.performAction(action) == true }
     }
 
     @Test fun switchesQualityAndRebindsTheSharedViewportWhenPreviewGrows() {
@@ -104,9 +104,11 @@ class CameraQualityTest {
                 assertTrue("Crop cannot exceed source", detail[2].toLong() * detail[3] <= detail[0].toLong() * detail[1])
                 click("카메라 크게")
                 await("large preview") { list -> list.any { it.text?.toString() == "기본 화면" } }
+                scrollPanel(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
                 val large = stream(previousCrop = detail.takeLast(2))
                 assertNotEquals("Larger preview must renegotiate its cropped viewport", detail.takeLast(2), large.takeLast(2))
                 click("기본 화면")
+                scrollPanel(AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD)
                 stream()
                 click("FHD")
                 await("standard selected") { list -> list.none { node ->

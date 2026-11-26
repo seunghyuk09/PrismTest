@@ -41,7 +41,7 @@ class CameraFocusTest {
             list.any { it.text?.toString() == "촬영 조건 고정됨" }
     }
 
-    @Test fun hardwareLockPersistsUntilAutomaticAndMustBeReacquiredAfterRebind() {
+    private fun withCamera(block: () -> Unit) {
         val context = instrumentation.targetContext
         val previous = Prefs.captureQuality(context)
         instrumentation.uiAutomation.grantRuntimePermission(context.packageName, Manifest.permission.CAMERA)
@@ -51,26 +51,47 @@ class CameraFocusTest {
                 await("first received camera frame") { list -> list.any {
                     Regex("수신 [1-9]\\d*×[1-9]\\d* · 저장 [1-9]\\d*×[1-9]\\d*").matches(it.text?.toString().orEmpty())
                 } }
-                click("초점 맞춰 고정")
+                block()
+            }
+        } finally { Prefs.setCaptureQuality(context, previous) }
+    }
+
+    @Test fun currentFocusHoldPersistsUntilAutomaticAndMustBeReacquiredAfterRebind() = withCamera {
+                click("현재 초점 고정")
                 locked()
                 // CameraX's default auto-cancel is 5 seconds. Inspection commonly runs 8–20s.
                 SystemClock.sleep(6_500)
                 locked()
                 click("자동")
-                await("unlocked") { list -> list.any { it.text?.toString() == "초점 맞춰 고정" && it.isEnabled } &&
+                await("unlocked") { list -> list.any { it.text?.toString() == "현재 초점 고정" && it.isEnabled } &&
                     list.none { it.text?.toString() in listOf("초점 잠금 확인됨", "고정 초점 렌즈 확인됨") } }
-                click("초점 맞춰 고정")
-                locked()
-                click("초점 다시 맞춤")
+                click("현재 초점 고정")
                 locked()
                 click("4K")
                 await("rebind releases the old lock") { list ->
-                    list.any { it.text?.toString() == "초점 맞춰 고정" && it.isEnabled } &&
+                    list.any { it.text?.toString() == "현재 초점 고정" && it.isEnabled } &&
                         list.none { it.text?.toString() in listOf("초점 잠금 확인됨", "고정 초점 렌즈 확인됨") }
                 }
-                click("초점 맞춰 고정")
+                click("현재 초점 고정")
                 locked()
-            }
-        } finally { Prefs.setCaptureQuality(context, previous) }
+    }
+
+    @Test fun explicitRefocusReportsItsActualOutcomeAndCanRecoverFromAFailure() = withCamera {
+        click("현재 초점 고정")
+        locked()
+        click("초점 다시 맞춤")
+        await("new refocus operation starts") { list ->
+            list.any { it.text?.toString() == "초점 고정 중…" || it.text?.toString() == "고정 초점 렌즈 확인됨" }
+        }
+        val terminal = await("refocus confirmed or honest AF failure") { list ->
+            list.any { it.text?.toString()?.startsWith("초점이 잡히지 않았습니다") == true } ||
+                (list.any { it.text?.toString() in listOf("초점 잠금 확인됨", "고정 초점 렌즈 확인됨") } &&
+                    list.any { it.text?.toString() == "촬영 조건 고정됨" })
+        }
+        if (terminal.any { it.text?.toString()?.startsWith("초점이 잡히지 않았습니다") == true }) {
+            assertFalse(terminal.any { it.text?.toString() == "촬영 조건 고정됨" })
+            click("현재 초점 고정")
+            locked()
+        } else locked()
     }
 }

@@ -61,7 +61,7 @@ def main():
         assert re.search(rf'versionCode={version}\b', package_info), 'Wrong installed version'
         report['installed_apk_sha256'] = installed_hash
         for class_name, expected, permission in [('InspectionStorageTest', 7, 'revoke'),
-                                                 ('CameraFocusTest', 1, 'grant'),
+                                                 ('CameraFocusTest', 2, 'grant'),
                                                  ('CameraQualityTest', 1, 'grant')]:
             adb('shell', 'pm', permission, PACKAGE, 'android.permission.CAMERA')
             output = adb('shell', 'am', 'instrument', '-w', '-r', '-e', 'class',

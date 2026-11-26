@@ -3,14 +3,14 @@
   "version": "0.1.25",
   "versionCode": 25,
   "release_stage": "candidate",
-  "apk_file": "PrismScope-v25-focus-lock-candidate2.apk",
-  "apk_bytes": 22601908,
-  "apk_sha256": "deee196973b1779a1cdfffd084cdd63eab8e5898babbd56c1f03957cb9c350de",
+  "apk_file": "PrismScope-v25-focus-lock-candidate3.apk",
+  "apk_bytes": 22618292,
+  "apk_sha256": "e17b28a5ceac237880f0a2ff4738d5323bdceda677541a06ba5d4d4d970d930a",
   "signer_sha256": "a45a9748c46959fe332d743fe7f9af7b63638a97385b9da2e2ca006b99b83de5",
-  "base_commit": "2173b6ca843a61c2b078b3273d76836af90f2d3e",
+  "base_commit": "6938f7c71c49357514b3cedbd911d13c8fb12388",
   "source_note": "The application source and candidate APK are committed together. Promotion copies identical validated bytes.",
   "jvm_tests": {
-    "tests": 67,
+    "tests": 68,
     "failures": 0,
     "errors": 0,
     "skipped": 0
@@ -19,12 +19,12 @@
     "arm64-v8a",
     "x86_64"
   ],
-  "focus_note": "After PreviewView is streaming, CameraX AF-only metering with auto-cancel disabled. A fresh, stationary FOCUSED_LOCKED result is verified before locking exposure/WB. Fixed lenses explicitly use AF_OFF. No lens-distance replay for an AF lock; unavailable distance is never replaced by 4 D. Manual focus is explicit.",
+  "focus_note": "Default hold freezes PASSIVE_FOCUSED continuous AF with AF_TRIGGER_START, then returns the trigger to IDLE after acknowledgement. Actual FOCUSED_LOCKED and stationary lens are verified before freezing exposure/WB. Explicit refocus uses CameraX AF-only metering without auto-cancel and reports failure honestly. Fixed lenses use AF_OFF. No lens-distance replay for AF locks; unknown distance is never replaced by 4 D. Manual focus is explicit.",
   "processing_note": "Noise reduction, sharpening, scene and video stabilization requests stay consistent before/after locking. Unchanged zoom is not resent.",
   "compatibility_note": "Retains v24 full-frame lossless color PNG and HD/FHD/QHD/4K selection. Rebind or zoom changes release the focus lock and require refocusing. Focus method is part of the calibration profile.",
   "android_instrumentation": {
     "execution": "pending",
-    "planned_tests": 9,
+    "planned_tests": 10,
     "workflow": ".github/workflows/android-validation.yml",
     "environment": "Android 11 API 30 x86_64 with KVM acceleration and an emulated camera"
   },
