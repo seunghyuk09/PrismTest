@@ -1,4 +1,6 @@
-"""Run Android integration tests against the APK offered in the README, without rebuilding it.
+"""Run Android integration tests against the checksum manifest APK, without rebuilding it.
+
+Release candidates are promoted to the README download by copying identical validated bytes.
 
 Requires Android platform-tools on PATH and an emulator/device with a writable adb home.
 Reports actual stream sizes; a software or virtual camera does not measure phone optics/FPS.
