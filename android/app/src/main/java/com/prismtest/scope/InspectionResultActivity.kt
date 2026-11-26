@@ -135,7 +135,9 @@ private fun InspectionResultScreen(reportUri: String, onClose: () -> Unit) {
         Column(Modifier.heightIn(max = 100.dp).verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(if (result?.optString("location_mode") == "dig_candidates")
-                "원은 디그 후보 위치입니다. 1번은 점수가 가장 높은 후보이며 실제 디그 크기·확정을 뜻하지 않습니다."
+                if (result.optString("candidate_marker_style") == EvidenceImages.DIG_MARKER_STYLE)
+                    "1–3번 빨강 · 4–6번 주황 · 7–10번 노랑. 후보 점수순으로 최대 10곳을 표시합니다. 원은 디그 후보 위치이며 실제 크기·확정을 뜻하지 않습니다."
+                else "원은 디그 후보 위치입니다. 1번은 점수가 가장 높은 후보이며 실제 디그 크기·확정을 뜻하지 않습니다."
                 else "사각형은 점수를 계산한 영역입니다. 이 유형은 개별 결함 위치를 산출하지 않습니다.", fontSize = 12.sp)
             Text("사진: ${InspectionStorage.IMAGE_DIR}\n기록: ${InspectionStorage.REPORT_DIR}",
                 fontSize = 11.sp, color = Color(0xFFA6B7C3))

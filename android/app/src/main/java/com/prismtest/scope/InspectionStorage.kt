@@ -31,6 +31,7 @@ object InspectionJson {
                     .put("good_samples", result.model.good.size).put("bad_samples", result.model.bad.size)
                     .put("pass_below", nullable(result.model.band?.pass)).put("fail_at_or_above", nullable(result.model.band?.fail))
                     .put("location_mode", if (result.type == DefectType.DIG) "dig_candidates" else "analysis_roi_only")
+                    .put("candidate_marker_style", if (result.type == DefectType.DIG) EvidenceImages.DIG_MARKER_STYLE else JSONObject.NULL)
                 result.frame?.let { f ->
                     val roi = f.analysisBounds ?: RoiGeometry.display(f.roi, f.image.width, f.image.height, f.image.rotation)
                     type.put("frame", JSONObject().put("camera_timestamp_ns", f.cameraTimestampNs).put("captured_at", f.capturedAt)

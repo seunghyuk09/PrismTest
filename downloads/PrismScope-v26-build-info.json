@@ -1,0 +1,58 @@
+{
+  "package": "com.prismtest.scope",
+  "version": "0.1.26",
+  "versionCode": 26,
+  "release_stage": "candidate",
+  "apk_file": "PrismScope-v26-ranked-markers-candidate1.apk",
+  "apk_bytes": 22618292,
+  "apk_sha256": "f7de780c3e641b968b7d0145261c30a783d07542a1404db2855c57a394d5879e",
+  "signer_sha256": "a45a9748c46959fe332d743fe7f9af7b63638a97385b9da2e2ca006b99b83de5",
+  "base_commit": "6c3f9b5f9cf3e511a1f0388a8670d60cb9b0ed8e",
+  "source_note": "The application source and candidate APK are committed together. Promotion copies identical tested bytes.",
+  "jvm_tests": {
+    "tests": 68,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "native_abis": [
+    "arm64-v8a",
+    "x86_64"
+  ],
+  "final_dig_markers": {
+    "style": "rank-colors-top10-v1",
+    "max_displayed": 10,
+    "groups": [
+      {
+        "ranks": [
+          1,
+          3
+        ],
+        "color": "#FF3B30"
+      },
+      {
+        "ranks": [
+          4,
+          6
+        ],
+        "color": "#FF9500"
+      },
+      {
+        "ranks": [
+          7,
+          10
+        ],
+        "color": "#FFD60A"
+      }
+    ],
+    "scope": "New final inspection result images and automatically saved marked PNGs. Colors follow candidate rank independent of verdict. Candidates after 10 are not drawn. Full analysis and report coordinates are retained. Legacy images retain their own legend."
+  },
+  "compatibility_note": "Capture, autofocus, HD/FHD/QHD/4K color storage and inspection scoring are unchanged from v25.",
+  "android_instrumentation": {
+    "execution": "pending",
+    "planned_tests": 10,
+    "workflow": ".github/workflows/android-validation.yml",
+    "environment": "Android 11 API 30 x86_64 with KVM acceleration and a fixed-focus virtual-scene camera"
+  },
+  "physical_camera_tested": false
+}
