@@ -87,7 +87,7 @@ jobs:
             echo '::error title=Android acceleration::Hosted runner cannot use the Android accelerator'
             exit 1
           fi
-          "$ANDROID_HOME/emulator/emulator" -avd PrismValidation -no-window -no-audio -no-boot-anim -no-snapshot -no-metrics -accel on -gpu swiftshader_indirect -memory 3072 -cores 2 -camera-back emulated -camera-front none -skin 720x1280 -dpi-device 280 > out/android-validation/emulator.log 2>&1 &
+          "$ANDROID_HOME/emulator/emulator" -avd PrismValidation -no-window -no-audio -no-boot-anim -no-snapshot -no-metrics -accel on -gpu swiftshader_indirect -memory 3072 -cores 2 -camera-back virtualscene -camera-front none -skin 720x1280 -dpi-device 280 > out/android-validation/emulator.log 2>&1 &
       - name: Verify exact download APK and run Android tests
         run: python3 scripts/validate_android_apk.py
       - name: Upload test evidence
