@@ -61,8 +61,8 @@ def main():
         assert re.search(rf'versionCode={version}\b', package_info), 'Wrong installed version'
         report['installed_apk_sha256'] = installed_hash
         for class_name, expected, permission in [('InspectionStorageTest', 7, 'revoke'),
-                                                 ('CameraQualityTest', 1, 'grant'),
-                                                 ('CameraFocusTest', 1, 'grant')]:
+                                                 ('CameraFocusTest', 1, 'grant'),
+                                                 ('CameraQualityTest', 1, 'grant')]:
             adb('shell', 'pm', permission, PACKAGE, 'android.permission.CAMERA')
             output = adb('shell', 'am', 'instrument', '-w', '-r', '-e', 'class',
                          PACKAGE + '.' + class_name,
@@ -87,8 +87,15 @@ def main():
         report.update(status='failed', error=str(error))
         raise
     finally:
+        try:
+            focus_log = adb('shell', 'logcat', '-d', '-s', 'PrismFocus:I', '*:S', timeout=15, check=False)
+            (OUT / 'camera-focus.log').write_text(focus_log)
+            report['camera_focus'] = focus_log.splitlines()
+        except (subprocess.SubprocessError, OSError):
+            pass
         if report.get('error'):
             diagnostics = [report['error']]
+            if report.get('camera_focus'): diagnostics.append('\n'.join(report['camera_focus'][-6:]))
             for run in report['runs']:
                 if not run['passed']:
                     diagnostics.append((OUT / (run['class'] + '.log')).read_text()[-6500:])
@@ -117,7 +124,8 @@ def main():
                 if report.get('error'):
                     summary.write('\nError: ' + report['error'] + '\n')
             message = (report.get('diagnostics') or
-                       f"Passed {report.get('tests_passed', 0)} Android tests against APK SHA256 {report['apk_sha256']}")
+                       f"Passed {report.get('tests_passed', 0)} Android tests against APK SHA256 {report['apk_sha256']}\n" +
+                       '\n'.join(report.get('camera_focus', [])[-6:]))
             message = message.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
             level = 'error' if report['status'] == 'failed' else 'notice'
             print(f'::{level} title=Published Android APK validation::{message}', flush=True)

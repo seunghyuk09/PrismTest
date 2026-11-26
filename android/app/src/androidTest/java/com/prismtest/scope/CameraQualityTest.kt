@@ -50,6 +50,12 @@ class CameraQualityTest {
         val found = await("full color camera stream") { list ->
             val a = list.mapNotNull { full.matchEntire(it.text?.toString().orEmpty()) }.firstOrNull()
             val b = list.mapNotNull { view.matchEntire(it.text?.toString().orEmpty()) }.firstOrNull()
+            // The expanded camera leaves a 150dp scrolling controls panel. Focus guidance
+            // can put the second resolution line below its visible area; reveal it rather
+            // than interpreting an offscreen label as a stalled CameraX stream.
+            if (a != null && b == null) list.firstOrNull {
+                it.isScrollable && it.className?.toString() == "android.widget.ScrollView"
+            }?.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
             a != null && b != null && a.groupValues.drop(1).all { it.toInt() > 0 } &&
                 b.groupValues.drop(1).take(4).all { it.toInt() > 0 } &&
                 (previousCrop == null || b.groupValues.drop(3).take(2).map(String::toInt) != previousCrop)
