@@ -27,11 +27,14 @@ class CameraFocusTest {
         error("Timed out: $description; UI=${last.mapNotNull { it.text?.toString() }}")
     }
     private fun click(text: String) {
-        val node = await("enabled $text") { list -> list.any { it.text?.toString() == text && it.isEnabled } }
-            .first { it.text?.toString() == text && it.isEnabled }
-        var target: AccessibilityNodeInfo? = node
-        while (target != null && !target.isClickable) target = target.parent
-        assertTrue("Click $text", target?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true)
+        await("click enabled $text") { list ->
+            var target = list.firstOrNull { it.text?.toString() == text }
+            while (target != null && !target.isClickable) target = target.parent
+            // A disabled Compose button's child Text can still report isEnabled=true.
+            // Check the clickable ancestor and retry an action invalidated by recomposition.
+            target?.let { it.isEnabled && it.isVisibleToUser &&
+                it.performAction(AccessibilityNodeInfo.ACTION_CLICK) } == true
+        }
     }
     private fun locked() = await("confirmed hardware lock and manual exposure/WB") { list ->
         list.any { it.text?.toString() == "초점 잠금 확인됨" } && list.any { it.text?.toString() == "촬영 조건 고정됨" }
@@ -44,6 +47,9 @@ class CameraFocusTest {
         Prefs.setCaptureQuality(context, CaptureQuality.FHD)
         try {
             ActivityScenario.launch(MainActivity::class.java).use {
+                await("first received camera frame") { list -> list.any {
+                    Regex("수신 [1-9]\\d*×[1-9]\\d* · 저장 [1-9]\\d*×[1-9]\\d*").matches(it.text?.toString().orEmpty())
+                } }
                 click("초점 맞춰 고정")
                 locked()
                 // CameraX's default auto-cancel is 5 seconds. Inspection commonly runs 8–20s.

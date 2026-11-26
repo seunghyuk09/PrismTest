@@ -36,12 +36,12 @@ class CameraQualityTest {
     }
 
     private fun click(text: String) {
-        val node = await("enabled $text") { list ->
-            list.any { it.text?.toString() == text && it.isEnabled }
-        }.first { it.text?.toString() == text && it.isEnabled }
-        var target: AccessibilityNodeInfo? = node
-        while (target != null && !target.isClickable) target = target.parent
-        assertTrue("Click $text", target?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true)
+        await("click enabled $text") { list ->
+            var target = list.firstOrNull { it.text?.toString() == text }
+            while (target != null && !target.isClickable) target = target.parent
+            target?.let { it.isEnabled && it.isVisibleToUser &&
+                it.performAction(AccessibilityNodeInfo.ACTION_CLICK) } == true
+        }
     }
 
     private fun stream(previousCrop: List<Int>? = null): List<Int> {
