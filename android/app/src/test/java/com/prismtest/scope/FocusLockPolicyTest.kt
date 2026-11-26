@@ -12,6 +12,13 @@ class FocusLockPolicyTest {
     private fun lock(reading: AppliedCamera = focused, limits: CameraCaps = caps, id: String = "lock-1") =
         FocusLockPolicy.snapshot(previous, reading, limits, id)
 
+    @Test fun fixedAndUnreportedMinimumDistanceAreDifferentCapabilities() {
+        assertFalse(FocusLockPolicy.supportsAutoFocus(true, 0f))
+        assertTrue(FocusLockPolicy.supportsAutoFocus(true, 10f))
+        assertTrue(FocusLockPolicy.supportsAutoFocus(true, null))
+        assertFalse(FocusLockPolicy.supportsAutoFocus(false, 10f))
+    }
+
     @Test fun successfulAfKeepsTheHardwareLockInsteadOfReplayingAnOldManualDistance() {
         val snapshot = requireNotNull(lock())
         assertTrue(snapshot.locked)

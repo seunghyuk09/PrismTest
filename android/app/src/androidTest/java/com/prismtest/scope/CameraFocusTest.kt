@@ -37,7 +37,8 @@ class CameraFocusTest {
         }
     }
     private fun locked() = await("confirmed hardware lock and manual exposure/WB") { list ->
-        list.any { it.text?.toString() == "초점 잠금 확인됨" } && list.any { it.text?.toString() == "촬영 조건 고정됨" }
+        list.any { it.text?.toString() in listOf("초점 잠금 확인됨", "고정 초점 렌즈 확인됨") } &&
+            list.any { it.text?.toString() == "촬영 조건 고정됨" }
     }
 
     @Test fun hardwareLockPersistsUntilAutomaticAndMustBeReacquiredAfterRebind() {
@@ -57,7 +58,7 @@ class CameraFocusTest {
                 locked()
                 click("자동")
                 await("unlocked") { list -> list.any { it.text?.toString() == "초점 맞춰 고정" && it.isEnabled } &&
-                    list.none { it.text?.toString() == "초점 잠금 확인됨" } }
+                    list.none { it.text?.toString() in listOf("초점 잠금 확인됨", "고정 초점 렌즈 확인됨") } }
                 click("초점 맞춰 고정")
                 locked()
                 click("초점 다시 맞춤")
@@ -65,7 +66,7 @@ class CameraFocusTest {
                 click("4K")
                 await("rebind releases the old lock") { list ->
                     list.any { it.text?.toString() == "초점 맞춰 고정" && it.isEnabled } &&
-                        list.none { it.text?.toString() == "초점 잠금 확인됨" }
+                        list.none { it.text?.toString() in listOf("초점 잠금 확인됨", "고정 초점 렌즈 확인됨") }
                 }
                 click("초점 맞춰 고정")
                 locked()

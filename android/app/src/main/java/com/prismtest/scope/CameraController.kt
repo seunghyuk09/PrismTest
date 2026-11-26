@@ -330,6 +330,11 @@ class CameraController(
             b.setCaptureRequestOption(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
             b.setCaptureRequestOption(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_AUTO)
         }
+        if (!caps.supportsAutoFocus) {
+            // Some fixed lenses advertise AUTO modes despite a 0 D minimum focus distance.
+            // They have no autofocus movement or FOCUSED_LOCKED state to wait for.
+            b.setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
+        }
         // Keep processing consistent before/after locking. Turning sharpening off only
         // at lock time made the view look softer even if the lens had not moved.
         b.setCaptureRequestOption(CaptureRequest.NOISE_REDUCTION_MODE, CaptureRequest.NOISE_REDUCTION_MODE_OFF)
@@ -386,6 +391,8 @@ class CameraController(
         pendingFocus = onResult
         var focusResultAtCompletion: AppliedCamera? = null
         val lockId = UUID.randomUUID().toString()
+        Log.i("PrismFocus", "Lock requested: autofocus=${caps.supportsAutoFocus} minimum=${caps.minFocusDistance} " +
+            "point=${point.x},${point.y} mode=${applied.afMode} state=${applied.afState}")
         fun active() = token == focusRequest && generation == bindingGeneration && camera === cam
         fun finish(snapshot: ManualSettings?, error: String?) {
             if (!active()) return
@@ -393,6 +400,9 @@ class CameraController(
             pendingFocus = null
             focusRequest++
             if (snapshot == null) {
+                Log.w("PrismFocus", "Lock failed: $error; autofocus=${caps.supportsAutoFocus} " +
+                    "minimum=${caps.minFocusDistance} mode=${applied.afMode} state=${applied.afState} " +
+                    "moving=${applied.lensMoving} distance=${applied.focusDiopter}")
                 if (focusMeteringActive) cam.cameraControl.cancelFocusAndMetering()
                 focusMeteringActive = false
             } else {
@@ -418,6 +428,10 @@ class CameraController(
             confirm()
             return
         }
+        if (point.x !in 0f..1f || point.y !in 0f..1f) {
+            finish(null, "프리뷰가 아직 준비되지 않았습니다. 잠시 뒤 다시 고정하세요")
+            return
+        }
         val action = FocusMeteringAction.Builder(point, FocusMeteringAction.FLAG_AF)
             .disableAutoCancel().build()
         if (!cam.cameraInfo.isFocusMeteringSupported(action)) {
@@ -434,7 +448,8 @@ class CameraController(
                     confirm()
                 }
                 else finish(null, "초점이 잡히지 않았습니다. 프리즘 모서리를 영역 중앙에 놓고 거리를 조절해 다시 맞추세요")
-            } catch (_: Exception) {
+            } catch (error: Exception) {
+                Log.w("PrismFocus", "AF request interrupted", error)
                 finish(null, "초점 맞추기가 중단됐습니다. 다시 고정하세요")
             }
         }, ContextCompat.getMainExecutor(context))
@@ -457,13 +472,12 @@ class CameraController(
         val avail = info.getCameraCharacteristic(
             CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES
         ) ?: IntArray(0)
+        val minimumDistance = info.getCameraCharacteristic(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE)
         return CameraCaps(
             cameraId = info.cameraId,
             isoRange = info.getCameraCharacteristic(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE),
             exposureRange = info.getCameraCharacteristic(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE),
-            minFocusDistance = info.getCameraCharacteristic(
-                CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE
-            ) ?: 0f,
+            minFocusDistance = minimumDistance ?: 0f,
             zoomRange = zoom?.let { Range(it.minZoomRatio, it.maxZoomRatio) },
             analysisWidth = res?.width ?: 0,
             analysisHeight = res?.height ?: 0,
@@ -474,8 +488,9 @@ class CameraController(
             supportsManualPostProcessing = avail.contains(
                 CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_POST_PROCESSING
             ),
-            supportsAutoFocus = info.getCameraCharacteristic(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES)
-                ?.contains(CaptureRequest.CONTROL_AF_MODE_AUTO) == true,
+            supportsAutoFocus = FocusLockPolicy.supportsAutoFocus(
+                info.getCameraCharacteristic(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES)
+                    ?.contains(CaptureRequest.CONTROL_AF_MODE_AUTO) == true, minimumDistance),
         )
     }
 

@@ -46,6 +46,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.Observer
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -154,6 +155,8 @@ private fun Inspect(controller: CameraController) {
     var captureQuality by remember { mutableStateOf(Prefs.captureQuality(context)) }
     var cameraBinding by remember { mutableStateOf(true) }
     var focusLocking by remember { mutableStateOf(false) }
+    var focusError by remember { mutableStateOf<String?>(null) }
+    var previewStreaming by remember { mutableStateOf(false) }
     var largePreview by remember { mutableStateOf(false) }
     var boxSize by remember { mutableStateOf(Size.Zero) }
 
@@ -233,12 +236,18 @@ private fun Inspect(controller: CameraController) {
         // 프리즘이 손톱만 하게 보인다. 가운데를 잘라 채우는 편이 조준에 낫다.
         PreviewView(context).apply { scaleType = PreviewView.ScaleType.FILL_CENTER }
     }
+    DisposableEffect(previewView, lifecycleOwner) {
+        val observer = Observer<PreviewView.StreamState> { previewStreaming = it == PreviewView.StreamState.STREAMING }
+        previewView.previewStreamState.observe(lifecycleOwner, observer)
+        onDispose { previewView.previewStreamState.removeObserver(observer) }
+    }
 
     fun lockFocus() {
         val rect = fitRect(boxSize, frameW, frameH) ?: return
         val point = previewView.meteringPointFactory.createPoint(
             rect[0] + roi.cx * rect[2], rect[1] + roi.cy * rect[3])
         settings = settings.copy(locked = false, focusControl = FocusControl.AUTO_LOCK)
+        focusError = null
         focusLocking = true
         msg = "초점을 맞추는 동안 프리즘과 폰을 움직이지 마세요"
         controller.lockAt(point, settings) { locked, error ->
@@ -247,7 +256,10 @@ private fun Inspect(controller: CameraController) {
                 settings = locked
                 controller.updateManual(locked)
                 msg = "초점 잠금 완료 · 같은 거리에서 프리즘을 돌려 검사하세요"
-            } else if (error != null) msg = error
+            } else if (error != null) {
+                focusError = error
+                msg = error
+            }
         }
     }
 
@@ -297,6 +309,7 @@ private fun Inspect(controller: CameraController) {
             msg = "카메라가 다시 연결됩니다. 프리즘에 초점을 다시 맞춰 고정하세요"
         }
         cameraBinding = true
+        focusError = null
         applied = AppliedCamera()
         live = RoiStats.EMPTY
         frameW = 0; frameH = 0
@@ -518,7 +531,7 @@ private fun Inspect(controller: CameraController) {
     // 표시할 점수: 검사가 끝났으면 그 결과, 아니면 지금 화면의 값
     val shown: List<Double> = result ?: if (sweeping) peaks else TYPES.map { it.score(live) }
     val currentProfile = captureProfile(controller, settings, caps, frameW, frameH, roiSize, autoTrack)
-    val cameraReady = !cameraBinding && frameW > 0 && frameH > 0 && settings.locked &&
+    val cameraReady = !cameraBinding && previewStreaming && frameW > 0 && frameH > 0 && settings.locked &&
         !focusLocking && applied.aeOff && applied.focusHeld(settings, caps) && (applied.awbOff || applied.awbLocked)
     val verdicts = TYPES.mapIndexed { i, t ->
         if (modelProfiles[t] != currentProfile) Verdict.NOT_READY else models.getValue(t).judge(shown[i])
@@ -699,6 +712,7 @@ private fun Inspect(controller: CameraController) {
                         enabled = !sweeping && !savingInspection && !cameraBinding && !focusLocking && frameW > 0,
                         onClick = {
                             settings = settings.copy(locked = false)
+                            focusError = null
                             controller.updateManual(settings)
                         },
                         modifier = Modifier.height(38.dp),
@@ -706,7 +720,7 @@ private fun Inspect(controller: CameraController) {
                     ) { Text("자동", fontSize = 13.sp) }
                 } else {
                     Button(
-                        enabled = !sweeping && !savingInspection && !cameraBinding && !focusLocking && frameW > 0,
+                        enabled = !sweeping && !savingInspection && !cameraBinding && previewStreaming && !focusLocking && frameW > 0,
                         onClick = { lockFocus() },
                         modifier = Modifier.height(38.dp),
                         contentPadding = PaddingValues(horizontal = 14.dp),
@@ -721,19 +735,22 @@ private fun Inspect(controller: CameraController) {
                 val focusText = when {
                     focusLocking -> "초점 맞추는 중 · 프리즘을 멈추세요"
                     applied.focusHeld(settings, caps) -> if (settings.focusControl == FocusControl.MANUAL)
-                        "수동 초점 적용됨" else "초점 잠금 확인됨"
+                        "수동 초점 적용됨" else if (caps.supportsAutoFocus) "초점 잠금 확인됨" else "고정 초점 렌즈 확인됨"
                     settings.locked -> "초점 잠금 확인 중 · 검사 대기"
+                    focusError != null -> focusError!!
+                    !previewStreaming -> "프리뷰 준비 중 · 잠시 기다리세요"
                     else -> "프리즘 모서리를 검사 영역 중앙에 놓고 고정하세요"
                 }
                 Text(focusText, Modifier.weight(1f), fontSize = 11.sp,
                     color = if (applied.focusHeld(settings, caps)) OK else WARN)
                 if (focusLocking) TextButton(onClick = {
                     settings = settings.copy(locked = false)
+                    focusError = null
                     controller.updateManual(settings)
                     msg = "초점 맞추기를 취소했습니다"
                 }) { Text("취소", fontSize = 12.sp) }
                 else if (settings.locked) TextButton(onClick = { lockFocus() },
-                    enabled = !sweeping && !savingInspection && !cameraBinding) {
+                    enabled = !sweeping && !savingInspection && !cameraBinding && previewStreaming) {
                     Text("초점 다시 맞춤", fontSize = 12.sp)
                 }
             }

@@ -4,6 +4,10 @@ enum class FocusControl(val key: String) { AUTO_LOCK("af-lock"), MANUAL("manual"
 
 /** Snapshot only a confirmed lens hold. Unknown focus distance never becomes a lens request. */
 object FocusLockPolicy {
+    /** Zero explicitly means a fixed lens. A missing characteristic does not mean fixed. */
+    fun supportsAutoFocus(autoModeAvailable: Boolean, minimumDistance: Float?): Boolean =
+        autoModeAvailable && minimumDistance != 0f
+
     fun snapshot(base: ManualSettings, reading: AppliedCamera, caps: CameraCaps,
                  lockId: String): ManualSettings? {
         val locked = base.copy(locked = true, focusControl = FocusControl.AUTO_LOCK)
