@@ -21,4 +21,12 @@ class CalibrationProfileTest {
         assertNotEquals(roiKey(.65f, false), roiKey(.65f, true))
         assertEquals(roiKey(.65f, true), roiKey(.65f, true))
     }
+
+    @Test fun hardwareLockAndManualFocusDoNotShareCriteriaAndUnknownIsNotInfinity() {
+        fun focusKey(distance: Float?, mode: String) = CalibrationProfile.key(
+            "Fold7", "0", 720, 960, 100, 10_000_000L, distance, 2f, "1,1,1,1", focusControl = mode)
+        assertNotEquals(focusKey(4f, "manual"), focusKey(4f, "af-lock"))
+        assertNotEquals(focusKey(null, "af-lock"), focusKey(0f, "af-lock"))
+        assertNotEquals(focusKey(null, "af-lock-1"), focusKey(null, "af-lock-2"))
+    }
 }

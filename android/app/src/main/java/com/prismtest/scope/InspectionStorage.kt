@@ -46,6 +46,9 @@ object InspectionJson {
                         .put("dig_masked_fraction", f.stats.dig.maskedFraction).put("dig_score", f.stats.dig.score)
                         .put("iso", nullable(f.camera.iso)).put("exposure_ns", nullable(f.camera.exposureNs))
                         .put("focus_diopter", nullable(f.camera.focusDiopter)).put("zoom", f.settings.zoom)
+                        .put("focus_control", f.settings.focusControl.key)
+                        .put("af_mode", nullable(f.camera.afMode)).put("af_state", nullable(f.camera.afState))
+                        .put("lens_moving", f.camera.lensMoving)
                         .put("locked", f.settings.locked)
                         .put("dig_candidates", JSONArray(f.stats.dig.spots.mapIndexed { i, p ->
                             JSONObject().put("number", i + 1).put("cx", p.cx).put("cy", p.cy)

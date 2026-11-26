@@ -153,6 +153,7 @@ private fun Inspect(controller: CameraController) {
     var applied by remember { mutableStateOf(AppliedCamera()) }
     var captureQuality by remember { mutableStateOf(Prefs.captureQuality(context)) }
     var cameraBinding by remember { mutableStateOf(true) }
+    var focusLocking by remember { mutableStateOf(false) }
     var largePreview by remember { mutableStateOf(false) }
     var boxSize by remember { mutableStateOf(Size.Zero) }
 
@@ -233,6 +234,23 @@ private fun Inspect(controller: CameraController) {
         PreviewView(context).apply { scaleType = PreviewView.ScaleType.FILL_CENTER }
     }
 
+    fun lockFocus() {
+        val rect = fitRect(boxSize, frameW, frameH) ?: return
+        val point = previewView.meteringPointFactory.createPoint(
+            rect[0] + roi.cx * rect[2], rect[1] + roi.cy * rect[3])
+        settings = settings.copy(locked = false, focusControl = FocusControl.AUTO_LOCK)
+        focusLocking = true
+        msg = "초점을 맞추는 동안 프리즘과 폰을 움직이지 마세요"
+        controller.lockAt(point, settings) { locked, error ->
+            focusLocking = false
+            if (locked != null) {
+                settings = locked
+                controller.updateManual(locked)
+                msg = "초점 잠금 완료 · 같은 거리에서 프리즘을 돌려 검사하세요"
+            } else if (error != null) msg = error
+        }
+    }
+
     fun saveInspection(record: InspectionRecord) {
         if (savingInspection) return
         savingInspection = true
@@ -272,6 +290,12 @@ private fun Inspect(controller: CameraController) {
 
     LaunchedEffect(captureQuality, boxSize) {
         if (boxSize.width <= 0 || boxSize.height <= 0) return@LaunchedEffect
+        // A hardware AF lock cannot survive a stream/lifecycle rebind. Never recreate it by
+        // sending an old lens-distance reading to the newly opened camera.
+        if (settings.locked) {
+            settings = settings.copy(locked = false, focusControl = FocusControl.AUTO_LOCK)
+            msg = "카메라가 다시 연결됩니다. 프리즘에 초점을 다시 맞춰 고정하세요"
+        }
         cameraBinding = true
         applied = AppliedCamera()
         live = RoiStats.EMPTY
@@ -321,7 +345,7 @@ private fun Inspect(controller: CameraController) {
                     }
                     applied = controller.applied
 
-                    val manualApplied = settings.locked && applied.aeOff && applied.afOff &&
+                    val manualApplied = settings.locked && applied.aeOff && applied.focusHeld(settings, caps) &&
                         (applied.awbOff || applied.awbLocked)
                     val profile = captureProfile(controller, settings, caps, frameW, frameH, r.size, autoTrack)
                     if (sweeping && profile != sweepProfile) profileChanged = true
@@ -495,7 +519,7 @@ private fun Inspect(controller: CameraController) {
     val shown: List<Double> = result ?: if (sweeping) peaks else TYPES.map { it.score(live) }
     val currentProfile = captureProfile(controller, settings, caps, frameW, frameH, roiSize, autoTrack)
     val cameraReady = !cameraBinding && frameW > 0 && frameH > 0 && settings.locked &&
-        applied.aeOff && applied.afOff && (applied.awbOff || applied.awbLocked)
+        !focusLocking && applied.aeOff && applied.focusHeld(settings, caps) && (applied.awbOff || applied.awbLocked)
     val verdicts = TYPES.mapIndexed { i, t ->
         if (modelProfiles[t] != currentProfile) Verdict.NOT_READY else models.getValue(t).judge(shown[i])
     }
@@ -596,7 +620,7 @@ private fun Inspect(controller: CameraController) {
 
             if (screen == Screen.INSPECT) OutlinedButton(
                 onClick = { cameraBinding = true; largePreview = !largePreview },
-                enabled = !sweeping && !savingInspection && !cameraBinding,
+                enabled = !sweeping && !savingInspection && !cameraBinding && !focusLocking,
                 modifier = Modifier.align(Alignment.TopEnd).padding(8.dp),
                 colors = ButtonDefaults.outlinedButtonColors(containerColor = Color(0xD9000000), contentColor = Color.White)
             ) { Text(if (largePreview) "기본 화면" else "카메라 크게", fontSize = 12.sp) }
@@ -643,9 +667,10 @@ private fun Inspect(controller: CameraController) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text(
-                        if (settings.locked) "촬영 조건 고정됨" else "자동 노출 — 검사 전에 고정하세요",
+                        if (cameraReady) "촬영 조건 고정됨" else if (settings.locked) "촬영 조건 적용 확인 중"
+                        else "자동 노출 — 검사 전에 고정하세요",
                         fontSize = 12.sp, fontWeight = FontWeight.Bold,
-                        color = if (settings.locked) OK else WARN
+                        color = if (cameraReady) OK else WARN
                     )
                     // 「배경」은 암실을 만드는 동안의 계기판이다. 이 값이 8 이하로
                     // 내려가야 나머지가 성립하므로, 경고가 없을 때도 늘 보여준다.
@@ -671,7 +696,7 @@ private fun Inspect(controller: CameraController) {
                 }
                 if (settings.locked) {
                     OutlinedButton(
-                        enabled = !sweeping && !cameraBinding && frameW > 0,
+                        enabled = !sweeping && !savingInspection && !cameraBinding && !focusLocking && frameW > 0,
                         onClick = {
                             settings = settings.copy(locked = false)
                             controller.updateManual(settings)
@@ -681,17 +706,35 @@ private fun Inspect(controller: CameraController) {
                     ) { Text("자동", fontSize = 13.sp) }
                 } else {
                     Button(
-                        enabled = !sweeping && !cameraBinding && frameW > 0,
-                        onClick = {
-                            settings = controller.currentAsManual(settings)
-                            controller.updateManual(settings)
-                        },
+                        enabled = !sweeping && !savingInspection && !cameraBinding && !focusLocking && frameW > 0,
+                        onClick = { lockFocus() },
                         modifier = Modifier.height(38.dp),
                         contentPadding = PaddingValues(horizontal = 14.dp),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = OK, contentColor = Color.Black
                         )
-                    ) { Text("현재 상태로 고정", fontSize = 13.sp, fontWeight = FontWeight.Bold) }
+                    ) { Text(if (focusLocking) "초점 맞추는 중…" else "초점 맞춰 고정", fontSize = 13.sp, fontWeight = FontWeight.Bold) }
+                }
+            }
+
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                val focusText = when {
+                    focusLocking -> "초점 맞추는 중 · 프리즘을 멈추세요"
+                    applied.focusHeld(settings, caps) -> if (settings.focusControl == FocusControl.MANUAL)
+                        "수동 초점 적용됨" else "초점 잠금 확인됨"
+                    settings.locked -> "초점 잠금 확인 중 · 검사 대기"
+                    else -> "프리즘 모서리를 검사 영역 중앙에 놓고 고정하세요"
+                }
+                Text(focusText, Modifier.weight(1f), fontSize = 11.sp,
+                    color = if (applied.focusHeld(settings, caps)) OK else WARN)
+                if (focusLocking) TextButton(onClick = {
+                    settings = settings.copy(locked = false)
+                    controller.updateManual(settings)
+                    msg = "초점 맞추기를 취소했습니다"
+                }) { Text("취소", fontSize = 12.sp) }
+                else if (settings.locked) TextButton(onClick = { lockFocus() },
+                    enabled = !sweeping && !savingInspection && !cameraBinding) {
+                    Text("초점 다시 맞춤", fontSize = 12.sp)
                 }
             }
 
@@ -706,7 +749,7 @@ private fun Inspect(controller: CameraController) {
                             applied = AppliedCamera(); cameraBinding = true
                             msg = "${quality.label} 화질 연결 중 · 해상도가 달라지면 판정 기준을 다시 확인하세요"
                         }
-                    }, enabled = !sweeping && !savingInspection && !cameraBinding, label = { Text(quality.label) })
+                    }, enabled = !sweeping && !savingInspection && !cameraBinding && !focusLocking, label = { Text(quality.label) })
                 }
             }
             Text(if (cameraBinding) "카메라 화질 준비 중…" else
@@ -1002,10 +1045,11 @@ private fun Inspect(controller: CameraController) {
                 Text("배율 — 프리즘이 화면을 채울수록 정확해진다", fontWeight = FontWeight.Bold, fontSize = 14.sp)
                 Sld(
                     "배율", "%.1f×".format(settings.zoom), settings.zoom,
-                    (caps.zoomRange?.lower ?: 1f)..(caps.zoomRange?.upper ?: 8f), enabled = !sweeping
+                    (caps.zoomRange?.lower ?: 1f)..(caps.zoomRange?.upper ?: 8f), enabled = !sweeping && !focusLocking && !savingInspection && !cameraBinding
                 ) {
-                    settings = settings.copy(zoom = it)
+                    settings = settings.copy(zoom = it, locked = false, focusControl = FocusControl.AUTO_LOCK)
                     controller.updateManual(settings)
+                    msg = "배율이 바뀌었습니다. 초점을 다시 맞춰 고정하세요"
                 }
 
                 HorizontalDivider(color = Color(0xFF262E33))
@@ -1013,7 +1057,8 @@ private fun Inspect(controller: CameraController) {
                 Text("카메라 수동 조정 — 고정 상태에서만 반영", fontWeight = FontWeight.Bold, fontSize = 14.sp)
                 val isoLo = caps.isoRange?.lower ?: 50
                 val isoHi = caps.isoRange?.upper ?: 800
-                Sld("ISO", "${settings.iso}", settings.iso.toFloat(), isoLo.toFloat()..isoHi.toFloat(), enabled = !sweeping) {
+                val manualEnabled = settings.locked && !sweeping && !focusLocking && !savingInspection && !cameraBinding
+                Sld("ISO", "${settings.iso}", settings.iso.toFloat(), isoLo.toFloat()..isoHi.toFloat(), enabled = manualEnabled) {
                     settings = settings.copy(iso = it.roundToInt())
                     controller.updateManual(settings)
                 }
@@ -1021,18 +1066,23 @@ private fun Inspect(controller: CameraController) {
                 val expHi = minOf(caps.exposureRange?.upper ?: 100_000_000L, 100_000_000L).toFloat()
                 Sld(
                     "노출", "%.1f ms".format(settings.exposureNs / 1e6),
-                    settings.exposureNs.toFloat(), expLo..expHi, enabled = !sweeping
+                    settings.exposureNs.toFloat(), expLo..expHi, enabled = manualEnabled
                 ) {
                     settings = settings.copy(exposureNs = it.toLong())
                     controller.updateManual(settings)
                 }
-                val focusHi = if (caps.minFocusDistance > 0f) caps.minFocusDistance else 10f
+                val focusHi = if (caps.minFocusDistance > 0f) caps.minFocusDistance else 1f
+                val focusDistance = settings.focusDiopter
                 Sld(
-                    "초점 거리",
-                    if (settings.focusDiopter > 0f) "%.0f mm".format(1000f / settings.focusDiopter) else "무한대",
-                    settings.focusDiopter, 0f..focusHi, enabled = !sweeping
+                    "수동 초점 (직접 움직일 때만 적용)",
+                    when {
+                        focusDistance == null -> "거리 보고 없음"
+                        focusDistance > 0f -> "%.2f D".format(focusDistance)
+                        else -> "무한대"
+                    },
+                    focusDistance ?: 0f, 0f..focusHi, enabled = manualEnabled && caps.minFocusDistance > 0f
                 ) {
-                    settings = settings.copy(focusDiopter = it)
+                    settings = settings.copy(focusDiopter = it, focusControl = FocusControl.MANUAL)
                     controller.updateManual(settings)
                 }
 
@@ -1217,7 +1267,7 @@ private fun HelpOverlay(inspectSec: Int, onClose: () -> Unit) {
             listOf(
                 "1. 폰과 조명을 고정한다. 작은 차광 후드로 시작해도 된다",
                 "2. 어두운 검사면을 눌러 노란 영역을 맞춘다. 밝은 띠·손가락을 피한다",
-                "3. 「현재 상태로 고정」 — 이후 밝기가 변하지 않는다",
+                "3. 「초점 맞춰 고정」 — 잠금 확인 후 같은 거리에서 검사한다",
                 "4. 「샘플 등록」에서 양품을 " + DefectModel.MIN_GOOD + "개 등록한다",
                 "5. 유형별 불량도 " + DefectModel.MIN_BAD + "개씩 등록하면 경계가 정확해진다",
                 "6. 「검사로 돌아가기」 → 「검사 시작 (" + inspectSec + "초)」",
@@ -1354,4 +1404,5 @@ private fun buildCsvRow(
 private fun captureProfile(controller: CameraController, settings: ManualSettings, caps: CameraCaps,
                            width: Int, height: Int, roiSize: Float, autoTrack: Boolean): String = CalibrationProfile.key(
     android.os.Build.MANUFACTURER + "/" + android.os.Build.MODEL, caps.cameraId, width, height,
-    settings.iso, settings.exposureNs, settings.focusDiopter, settings.zoom, controller.whiteBalanceProfile, roiSize, autoTrack)
+    settings.iso, settings.exposureNs, settings.focusDiopter, settings.zoom, controller.whiteBalanceProfile, roiSize, autoTrack,
+    if (caps.supportsAutoFocus) settings.focusControl.key + settings.focusLockId else "fixed")

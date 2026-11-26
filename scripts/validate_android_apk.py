@@ -61,7 +61,8 @@ def main():
         assert re.search(rf'versionCode={version}\b', package_info), 'Wrong installed version'
         report['installed_apk_sha256'] = installed_hash
         for class_name, expected, permission in [('InspectionStorageTest', 7, 'revoke'),
-                                                 ('CameraQualityTest', 1, 'grant')]:
+                                                 ('CameraQualityTest', 1, 'grant'),
+                                                 ('CameraFocusTest', 1, 'grant')]:
             adb('shell', 'pm', permission, PACKAGE, 'android.permission.CAMERA')
             output = adb('shell', 'am', 'instrument', '-w', '-r', '-e', 'class',
                          PACKAGE + '.' + class_name,
@@ -74,6 +75,9 @@ def main():
                 raise RuntimeError(class_name + ' did not report the expected passing test count')
         sizes = adb('shell', 'logcat', '-d', '-s', 'PrismQualityTest:I', '*:S')
         (OUT / 'camera-streams.log').write_text(sizes)
+        focus_log = adb('shell', 'logcat', '-d', '-s', 'PrismFocus:I', '*:S')
+        (OUT / 'camera-focus.log').write_text(focus_log)
+        report['camera_focus'] = focus_log.splitlines()
         report['camera_streams'] = re.findall(r'수신 \d+×\d+ · 저장 \d+×\d+ / 프리뷰 \d+×\d+ · 검사화면 \d+×\d+ · 분석 \d+fps', sizes)
         report['tests_passed'] = sum(run['expected_tests'] for run in report['runs'])
         report['status'] = 'passed'

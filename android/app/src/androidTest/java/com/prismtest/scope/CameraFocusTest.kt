@@ -1,0 +1,69 @@
+package com.prismtest.scope
+
+import android.Manifest
+import android.os.SystemClock
+import android.view.accessibility.AccessibilityNodeInfo
+import androidx.test.core.app.ActivityScenario
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
+import org.junit.Assert.*
+import org.junit.Test
+import org.junit.runner.RunWith
+
+/** Validates the real CameraX/CaptureResult lock path, not optical focus on an emulated lens. */
+@RunWith(AndroidJUnit4::class)
+class CameraFocusTest {
+    private val instrumentation get() = InstrumentationRegistry.getInstrumentation()
+    private fun nodes(root: AccessibilityNodeInfo?): List<AccessibilityNodeInfo> =
+        if (root == null) emptyList() else listOf(root) + (0 until root.childCount).flatMap { nodes(root.getChild(it)) }
+    private fun await(description: String, condition: (List<AccessibilityNodeInfo>) -> Boolean): List<AccessibilityNodeInfo> {
+        val until = SystemClock.elapsedRealtime() + 60_000
+        var last = emptyList<AccessibilityNodeInfo>()
+        while (SystemClock.elapsedRealtime() < until) {
+            last = nodes(instrumentation.uiAutomation.rootInActiveWindow)
+            if (condition(last)) return last
+            SystemClock.sleep(200)
+        }
+        error("Timed out: $description; UI=${last.mapNotNull { it.text?.toString() }}")
+    }
+    private fun click(text: String) {
+        val node = await("enabled $text") { list -> list.any { it.text?.toString() == text && it.isEnabled } }
+            .first { it.text?.toString() == text && it.isEnabled }
+        var target: AccessibilityNodeInfo? = node
+        while (target != null && !target.isClickable) target = target.parent
+        assertTrue("Click $text", target?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true)
+    }
+    private fun locked() = await("confirmed hardware lock and manual exposure/WB") { list ->
+        list.any { it.text?.toString() == "초점 잠금 확인됨" } && list.any { it.text?.toString() == "촬영 조건 고정됨" }
+    }
+
+    @Test fun hardwareLockPersistsUntilAutomaticAndMustBeReacquiredAfterRebind() {
+        val context = instrumentation.targetContext
+        val previous = Prefs.captureQuality(context)
+        instrumentation.uiAutomation.grantRuntimePermission(context.packageName, Manifest.permission.CAMERA)
+        Prefs.setCaptureQuality(context, CaptureQuality.FHD)
+        try {
+            ActivityScenario.launch(MainActivity::class.java).use {
+                click("초점 맞춰 고정")
+                locked()
+                // CameraX's default auto-cancel is 5 seconds. Inspection commonly runs 8–20s.
+                SystemClock.sleep(6_500)
+                locked()
+                click("자동")
+                await("unlocked") { list -> list.any { it.text?.toString() == "초점 맞춰 고정" && it.isEnabled } &&
+                    list.none { it.text?.toString() == "초점 잠금 확인됨" } }
+                click("초점 맞춰 고정")
+                locked()
+                click("초점 다시 맞춤")
+                locked()
+                click("4K")
+                await("rebind releases the old lock") { list ->
+                    list.any { it.text?.toString() == "초점 맞춰 고정" && it.isEnabled } &&
+                        list.none { it.text?.toString() == "초점 잠금 확인됨" }
+                }
+                click("초점 맞춰 고정")
+                locked()
+            }
+        } finally { Prefs.setCaptureQuality(context, previous) }
+    }
+}

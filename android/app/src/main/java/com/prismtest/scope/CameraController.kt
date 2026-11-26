@@ -8,8 +8,11 @@ import android.hardware.camera2.CaptureResult
 import android.hardware.camera2.TotalCaptureResult
 import android.hardware.camera2.params.ColorSpaceTransform
 import android.hardware.camera2.params.RggbChannelVector
+import android.os.Handler
+import android.os.Looper
 import android.util.Range
 import android.util.Size
+import android.util.Log
 import androidx.camera.camera2.interop.Camera2CameraControl
 import androidx.camera.camera2.interop.Camera2CameraInfo
 import androidx.camera.camera2.interop.Camera2Interop
@@ -17,8 +20,10 @@ import androidx.camera.camera2.interop.CaptureRequestOptions
 import androidx.camera.camera2.interop.ExperimentalCamera2Interop
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
+import androidx.camera.core.FocusMeteringAction
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
+import androidx.camera.core.MeteringPoint
 import androidx.camera.core.Preview
 import androidx.camera.core.UseCaseGroup
 import androidx.camera.core.resolutionselector.AspectRatioStrategy
@@ -30,6 +35,8 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.doOnLayout
 import androidx.lifecycle.LifecycleOwner
 import java.util.concurrent.ExecutorService
+import java.util.UUID
+import kotlin.math.abs
 
 /** 카메라가 실제로 적용한 값. 설정한 값이 아니라 CaptureResult 에서 읽은 값이다. */
 data class AppliedCamera(
@@ -38,6 +45,8 @@ data class AppliedCamera(
     val focusDiopter: Float? = null,
     val aeMode: Int? = null,
     val afMode: Int? = null,
+    val afState: Int? = null,
+    val lensMoving: Boolean = false,
     val awbMode: Int? = null,
     val awbLocked: Boolean = false,
     val noiseReduction: Int? = null,
@@ -48,6 +57,22 @@ data class AppliedCamera(
     val awbOff: Boolean get() = awbMode == CaptureResult.CONTROL_AWB_MODE_OFF
     val nrOff: Boolean get() = noiseReduction == CaptureResult.NOISE_REDUCTION_MODE_OFF
     val edgeOff: Boolean get() = edgeMode == CaptureResult.EDGE_MODE_OFF
+
+    /** A passive AF result or an unsuccessful AF lock is not a held inspection focus. */
+    fun focusHeld(settings: ManualSettings, caps: CameraCaps): Boolean {
+        if (!settings.locked || lensMoving) return false
+        return when {
+            settings.focusControl == FocusControl.MANUAL -> {
+                val requested = settings.focusDiopter ?: return false
+                val actual = focusDiopter ?: return false
+                afOff && requested.isFinite() && actual.isFinite() && requested >= 0f &&
+                    abs(actual - requested) <= maxOf(.05f, requested * .02f)
+            }
+            caps.supportsAutoFocus -> afMode == CaptureResult.CONTROL_AF_MODE_AUTO &&
+                afState == CaptureResult.CONTROL_AF_STATE_FOCUSED_LOCKED
+            else -> afOff // A genuinely fixed-focus camera has no AF operation to wait for.
+        }
+    }
 }
 
 /** 기기가 지원하는 수동 제어 범위. */
@@ -63,6 +88,7 @@ data class CameraCaps(
     val hardwareLevel: Int = -1,
     val supportsManualSensor: Boolean = false,
     val supportsManualPostProcessing: Boolean = false,
+    val supportsAutoFocus: Boolean = false,
     val boundQuality: CaptureQuality = CaptureQuality.FHD,
     val previewWidth: Int = 0,
     val previewHeight: Int = 0,
@@ -87,12 +113,15 @@ data class ManualSettings(
     /**
      * 기본값은 자동이다. 잠긴 상태로 시작하면 조명이 갖춰지지 않은 곳에서
      * 새까만 화면만 보이고, 그게 앱이 고장난 것처럼 보인다.
-     * 화면이 잘 보이는 상태에서 [CameraController.currentAsManual] 로 잠근다.
+     * 화면이 잘 보이는 상태에서 [CameraController.lockAt] 으로 잠근다.
      */
     val locked: Boolean = false,
     val iso: Int = 100,
     val exposureNs: Long = 16_000_000L,
-    val focusDiopter: Float = 4.0f,
+    /** A missing distance is unknown; zero is a real infinity reading. Never substitute 4 D. */
+    val focusDiopter: Float? = null,
+    val focusControl: FocusControl = FocusControl.AUTO_LOCK,
+    val focusLockId: String = "",
     /**
      * 광학 배율. 프리즘이 화면에서 차지하는 비율을 결정한다.
      *
@@ -121,6 +150,11 @@ class CameraController(
     @Volatile private var bindingGeneration = 0
     private var provider: ProcessCameraProvider? = null
     private var camera: Camera? = null
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var focusRequest = 0
+    private var focusMeteringActive = false
+    private var requestedZoom: Float? = null
+    private var pendingFocus: ((ManualSettings?, String?) -> Unit)? = null
 
     @Volatile var caps: CameraCaps = CameraCaps(); private set
     @Volatile var applied: AppliedCamera = AppliedCamera(); private set
@@ -147,9 +181,14 @@ class CameraController(
         onError: (String) -> Unit = {},
         previewQuality: CaptureQuality = quality,
     ) {
+        cancelPendingFocus("카메라가 다시 연결됩니다. 초점을 다시 고정하세요")
         val generation = ++bindingGeneration
         camera = null
         applied = AppliedCamera()
+        lastGains = null
+        lastTransform = null
+        focusMeteringActive = false
+        requestedZoom = null
         val future = ProcessCameraProvider.getInstance(context)
         future.addListener({
             if (generation != bindingGeneration) return@addListener
@@ -178,7 +217,6 @@ class CameraController(
                 .setHighResolutionDisabled(false)
                 .setDynamicRange(androidx.camera.core.DynamicRange.SDR)
             val ext = Camera2Interop.Extender(previewBuilder)
-            applyManual(ext, settings)
             ext.setSessionCaptureCallback(object : CameraCaptureSession.CaptureCallback() {
                 override fun onCaptureCompleted(
                     session: CameraCaptureSession,
@@ -192,6 +230,8 @@ class CameraController(
                         focusDiopter = result.get(CaptureResult.LENS_FOCUS_DISTANCE),
                         aeMode = result.get(CaptureResult.CONTROL_AE_MODE),
                         afMode = result.get(CaptureResult.CONTROL_AF_MODE),
+                        afState = result.get(CaptureResult.CONTROL_AF_STATE),
+                        lensMoving = result.get(CaptureResult.LENS_STATE) == CaptureResult.LENS_STATE_MOVING,
                         awbMode = result.get(CaptureResult.CONTROL_AWB_MODE),
                         awbLocked = result.get(CaptureResult.CONTROL_AWB_LOCK) == true,
                         noiseReduction = result.get(CaptureResult.NOISE_REDUCTION_MODE),
@@ -267,38 +307,47 @@ class CameraController(
     /** 바인딩 후 수동값만 갱신한다. 재바인딩 없이 즉시 반영된다. */
     fun updateManual(s: ManualSettings) {
         val cam = camera ?: return
+        if (!s.locked || s.focusControl == FocusControl.MANUAL) {
+            cancelPendingFocus(null)
+            if (focusMeteringActive) cam.cameraControl.cancelFocusAndMetering()
+            focusMeteringActive = false
+        }
         val b = CaptureRequestOptions.Builder()
         if (s.locked) {
             b.setCaptureRequestOption(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
             b.setCaptureRequestOption(CaptureRequest.SENSOR_SENSITIVITY, s.iso)
             b.setCaptureRequestOption(CaptureRequest.SENSOR_EXPOSURE_TIME, s.exposureNs)
-            b.setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
-            b.setCaptureRequestOption(CaptureRequest.LENS_FOCUS_DISTANCE, s.focusDiopter)
+            // An autofocus lock belongs to CameraX's AF state machine. Do not override its
+            // AF_MODE_AUTO or replay a reported (possibly uncalibrated) lens distance.
+            if (s.focusControl == FocusControl.MANUAL) {
+                val distance = requireNotNull(s.focusDiopter)
+                require(distance.isFinite() && distance in 0f..caps.minFocusDistance)
+                b.setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
+                b.setCaptureRequestOption(CaptureRequest.LENS_FOCUS_DISTANCE, distance)
+            }
             applyWhiteBalance(b)
-            b.setCaptureRequestOption(CaptureRequest.NOISE_REDUCTION_MODE, CaptureRequest.NOISE_REDUCTION_MODE_OFF)
-            b.setCaptureRequestOption(CaptureRequest.EDGE_MODE, CaptureRequest.EDGE_MODE_OFF)
-            b.setCaptureRequestOption(
-                CaptureRequest.CONTROL_SCENE_MODE, CaptureRequest.CONTROL_SCENE_MODE_DISABLED
-            )
-            b.setCaptureRequestOption(
-                CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE,
-                CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_OFF
-            )
         } else {
             b.setCaptureRequestOption(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
-            b.setCaptureRequestOption(
-                CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE
-            )
             b.setCaptureRequestOption(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_AUTO)
         }
+        // Keep processing consistent before/after locking. Turning sharpening off only
+        // at lock time made the view look softer even if the lens had not moved.
+        b.setCaptureRequestOption(CaptureRequest.NOISE_REDUCTION_MODE, CaptureRequest.NOISE_REDUCTION_MODE_OFF)
+        b.setCaptureRequestOption(CaptureRequest.EDGE_MODE, CaptureRequest.EDGE_MODE_OFF)
+        b.setCaptureRequestOption(CaptureRequest.CONTROL_SCENE_MODE, CaptureRequest.CONTROL_SCENE_MODE_DISABLED)
+        b.setCaptureRequestOption(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE,
+            CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
         Camera2CameraControl.from(cam.cameraControl).captureRequestOptions = b.build()
 
         // 배율은 CaptureRequest 가 아니라 CameraControl 로 건다. 프리뷰와 분석
         // 버퍼에 함께 걸리므로 화면에서 본 크기가 그대로 측정 크기가 된다.
         val zr = caps.zoomRange
-        cam.cameraControl.setZoomRatio(
-            if (zr != null) s.zoom.coerceIn(zr.lower, zr.upper) else s.zoom
-        )
+        val zoom = if (zr != null) s.zoom.coerceIn(zr.lower, zr.upper) else s.zoom
+        // Reapplying an unchanged zoom can disturb metering on logical multi-camera devices.
+        if (requestedZoom != zoom) {
+            requestedZoom = zoom
+            cam.cameraControl.setZoomRatio(zoom)
+        }
     }
 
     /**
@@ -325,29 +374,77 @@ class CameraController(
         }
     }
 
-    /**
-     * 지금 카메라가 쓰고 있는 값을 그대로 수동 설정으로 바꾼다.
-     * 자동으로 잘 보이는 상태를 만든 뒤 이걸로 잠그는 것이 올바른 순서다.
-     */
-    fun currentAsManual(base: ManualSettings): ManualSettings {
-        val a = applied
-        return base.copy(
-            locked = true,
-            iso = a.iso ?: base.iso,
-            exposureNs = a.exposureNs ?: base.exposureNs,
-            focusDiopter = a.focusDiopter ?: base.focusDiopter,
-        )
+    /** Focus at the inspection point and leave the hardware AF lock engaged indefinitely.
+     * Only exposure/WB are copied after a successful, stationary AF result. No explicit
+     * lens-distance request is sent. Failure leaves automatic controls available for retry. */
+    fun lockAt(point: MeteringPoint, base: ManualSettings,
+               onResult: (ManualSettings?, String?) -> Unit) {
+        val cam = camera ?: run { onResult(null, "카메라 연결을 기다리세요"); return }
+        updateManual(base.copy(locked = false))
+        val token = ++focusRequest
+        val generation = bindingGeneration
+        pendingFocus = onResult
+        var focusResultAtCompletion: AppliedCamera? = null
+        val lockId = UUID.randomUUID().toString()
+        fun active() = token == focusRequest && generation == bindingGeneration && camera === cam
+        fun finish(snapshot: ManualSettings?, error: String?) {
+            if (!active()) return
+            val callback = pendingFocus ?: return
+            pendingFocus = null
+            focusRequest++
+            if (snapshot == null) {
+                if (focusMeteringActive) cam.cameraControl.cancelFocusAndMetering()
+                focusMeteringActive = false
+            } else {
+                Log.i("PrismFocus", "Hardware lock: mode=${applied.afMode} state=${applied.afState} " +
+                    "moving=${applied.lensMoving} distance=${applied.focusDiopter} (no lens-distance replay)")
+            }
+            callback(snapshot, error)
+        }
+        fun confirm() {
+            if (!active()) return
+            // The CameraX future and interop callback run on different executors. Require a
+            // fresh result after the future, not a cached reading from the preceding AF lock.
+            val reading = applied
+            val snapshot = if (reading === focusResultAtCompletion) null else
+                FocusLockPolicy.snapshot(base, reading, caps, lockId)
+            if (snapshot != null) finish(snapshot, null)
+            else mainHandler.postDelayed({ confirm() }, 50)
+        }
+        mainHandler.postDelayed({
+            finish(null, "초점을 고정하지 못했습니다. 프리즘 모서리를 영역 중앙에 놓고 거리를 조절해 다시 맞추세요")
+        }, 8_000)
+        if (!caps.supportsAutoFocus) {
+            confirm()
+            return
+        }
+        val action = FocusMeteringAction.Builder(point, FocusMeteringAction.FLAG_AF)
+            .disableAutoCancel().build()
+        if (!cam.cameraInfo.isFocusMeteringSupported(action)) {
+            finish(null, "이 카메라는 영역 초점 잠금을 지원하지 않습니다. 다른 카메라를 사용하세요")
+            return
+        }
+        focusMeteringActive = true
+        val focus = cam.cameraControl.startFocusAndMetering(action)
+        focus.addListener({
+            if (!active()) return@addListener
+            try {
+                if (focus.get().isFocusSuccessful) {
+                    focusResultAtCompletion = applied
+                    confirm()
+                }
+                else finish(null, "초점이 잡히지 않았습니다. 프리즘 모서리를 영역 중앙에 놓고 거리를 조절해 다시 맞추세요")
+            } catch (_: Exception) {
+                finish(null, "초점 맞추기가 중단됐습니다. 다시 고정하세요")
+            }
+        }, ContextCompat.getMainExecutor(context))
     }
 
-    private fun applyManual(ext: Camera2Interop.Extender<Preview>, s: ManualSettings) {
-        if (!s.locked) return
-        ext.setCaptureRequestOption(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
-        ext.setCaptureRequestOption(CaptureRequest.SENSOR_SENSITIVITY, s.iso)
-        ext.setCaptureRequestOption(CaptureRequest.SENSOR_EXPOSURE_TIME, s.exposureNs)
-        ext.setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
-        ext.setCaptureRequestOption(CaptureRequest.LENS_FOCUS_DISTANCE, s.focusDiopter)
-        ext.setCaptureRequestOption(CaptureRequest.NOISE_REDUCTION_MODE, CaptureRequest.NOISE_REDUCTION_MODE_OFF)
-        ext.setCaptureRequestOption(CaptureRequest.EDGE_MODE, CaptureRequest.EDGE_MODE_OFF)
+    private fun cancelPendingFocus(message: String?) {
+        focusRequest++
+        val callback = pendingFocus
+        pendingFocus = null
+        callback?.invoke(null, message)
     }
 
     private fun readCaps(cam: Camera, analysis: ImageAnalysis): CameraCaps {
@@ -377,10 +474,13 @@ class CameraController(
             supportsManualPostProcessing = avail.contains(
                 CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_POST_PROCESSING
             ),
+            supportsAutoFocus = info.getCameraCharacteristic(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES)
+                ?.contains(CaptureRequest.CONTROL_AF_MODE_AUTO) == true,
         )
     }
 
     fun unbind() {
+        cancelPendingFocus(null)
         bindingGeneration++
         provider?.unbindAll()
         camera = null

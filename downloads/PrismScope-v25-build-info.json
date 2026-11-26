@@ -1,0 +1,32 @@
+{
+  "package": "com.prismtest.scope",
+  "version": "0.1.25",
+  "versionCode": 25,
+  "release_stage": "candidate",
+  "apk_file": "PrismScope-v25-focus-lock-candidate1.apk",
+  "apk_bytes": 22601908,
+  "apk_sha256": "1e17a638aca6c0abb8ef99535f71383679c07abfbedfa334dca2cf98cc8115df",
+  "signer_sha256": "a45a9748c46959fe332d743fe7f9af7b63638a97385b9da2e2ca006b99b83de5",
+  "base_commit": "b34af2429168ce47b91c2be8811f7311b4530576",
+  "source_note": "The application source and candidate APK are committed together. Promotion copies identical validated bytes.",
+  "jvm_tests": {
+    "tests": 66,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "native_abis": [
+    "arm64-v8a",
+    "x86_64"
+  ],
+  "focus_note": "CameraX AF-only metering with auto-cancel disabled. A fresh, stationary FOCUSED_LOCKED result is verified before locking exposure/WB. No lens-distance replay for an AF lock; unavailable distance is never replaced by 4 D. Manual focus is explicit.",
+  "processing_note": "Noise reduction, sharpening, scene and video stabilization requests stay consistent before/after locking. Unchanged zoom is not resent.",
+  "compatibility_note": "Retains v24 full-frame lossless color PNG and HD/FHD/QHD/4K selection. Rebind or zoom changes release the focus lock and require refocusing. Focus method is part of the calibration profile.",
+  "android_instrumentation": {
+    "execution": "pending",
+    "planned_tests": 9,
+    "workflow": ".github/workflows/android-validation.yml",
+    "environment": "Android 11 API 30 x86_64 with KVM acceleration and an emulated camera"
+  },
+  "physical_camera_tested": false
+}
