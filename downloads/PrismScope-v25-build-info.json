@@ -2,8 +2,8 @@
   "package": "com.prismtest.scope",
   "version": "0.1.25",
   "versionCode": 25,
-  "release_stage": "candidate",
-  "apk_file": "PrismScope-v25-focus-lock-candidate3.apk",
+  "release_stage": "validated",
+  "apk_file": "PrismScope-v25-focus-lock.apk",
   "apk_bytes": 22618292,
   "apk_sha256": "e17b28a5ceac237880f0a2ff4738d5323bdceda677541a06ba5d4d4d970d930a",
   "signer_sha256": "a45a9748c46959fe332d743fe7f9af7b63638a97385b9da2e2ca006b99b83de5",
@@ -23,10 +23,36 @@
   "processing_note": "Noise reduction, sharpening, scene and video stabilization requests stay consistent before/after locking. Unchanged zoom is not resent.",
   "compatibility_note": "Retains v24 full-frame lossless color PNG and HD/FHD/QHD/4K selection. Rebind or zoom changes release the focus lock and require refocusing. Focus method is part of the calibration profile.",
   "android_instrumentation": {
-    "execution": "pending",
+    "execution": "passed",
     "planned_tests": 10,
     "workflow": ".github/workflows/android-validation.yml",
-    "environment": "Android 11 API 30 x86_64 with KVM acceleration and an emulated camera"
+    "environment": "Android 11 API 30 x86_64 with KVM acceleration and a virtual-scene back camera",
+    "tests_passed_in_v25": 10,
+    "failures_in_successful_run": 0,
+    "workflow_run_url": "https://github.com/seunghyuk09/PrismTest/actions/runs/45734556096",
+    "workflow_run_id": 45734556096,
+    "validated_source_commit": "522efc7",
+    "app_source_commit": "3eda0ae",
+    "validated_date": "2026-11-26 Asia/Seoul",
+    "installed_apk_sha256": "e17b28a5ceac237880f0a2ff4738d5323bdceda677541a06ba5d4d4d970d930a",
+    "candidate_name": "PrismScope-v25-focus-lock-candidate3.apk",
+    "promotion": "Official download copies the identical tested bytes without rebuilding.",
+    "artifact_name": "published-apk-validation",
+    "checks": [
+      "Fixed-focus CameraX camera: exposure/WB confirmation, hold beyond 5 seconds, unlock/relock and quality rebind",
+      "Explicit refocus UI and fixed-focus fallback; moving-lens success remains a physical-device check",
+      "All four quality tiers, ROI controls and shared viewport rebind",
+      "Full 4K color evidence and native conversion checks from v24",
+      "Manual full-frame color, legacy grayscale, result viewer and failed-save rollback"
+    ],
+    "artifact_sha256": "7fa798bfc9765e523f61704c8ae2438f63ca375cf7f94a64f807012cf9cfe818",
+    "autofocus_success_exercised": false,
+    "camera_focus_observation": "The successful virtual-scene run exposed a fixed-focus camera: AF mode OFF (0), AF state INACTIVE (0), distance 0 D. It validates the fixed-focus path and exposure/WB/UI/evidence behavior, not successful locking of a moving autofocus lens.",
+    "negative_autofocus_observation": {
+      "workflow_run_url": "https://github.com/seunghyuk09/PrismTest/actions/runs/45733703406",
+      "apk_sha256": "e17b28a5ceac237880f0a2ff4738d5323bdceda677541a06ba5d4d4d970d930a",
+      "outcome": "The flat emulated camera reported NOT_FOCUSED_LOCKED (5) for both primary current-hold attempts. The app displayed failure and stayed unlocked. The positive-focus assertions failed in this fixture; this was not a successful autofocus validation."
+    }
   },
   "physical_camera_tested": false
 }
