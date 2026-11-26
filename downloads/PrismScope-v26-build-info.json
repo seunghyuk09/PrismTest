@@ -2,8 +2,8 @@
   "package": "com.prismtest.scope",
   "version": "0.1.26",
   "versionCode": 26,
-  "release_stage": "candidate",
-  "apk_file": "PrismScope-v26-ranked-markers-candidate1.apk",
+  "release_stage": "validated",
+  "apk_file": "PrismScope-v26-ranked-markers.apk",
   "apk_bytes": 22618292,
   "apk_sha256": "f7de780c3e641b968b7d0145261c30a783d07542a1404db2855c57a394d5879e",
   "signer_sha256": "a45a9748c46959fe332d743fe7f9af7b63638a97385b9da2e2ca006b99b83de5",
@@ -49,10 +49,21 @@
   },
   "compatibility_note": "Capture, autofocus, HD/FHD/QHD/4K color storage and inspection scoring are unchanged from v25.",
   "android_instrumentation": {
-    "execution": "pending",
+    "execution": "passed",
     "planned_tests": 10,
     "workflow": ".github/workflows/android-validation.yml",
-    "environment": "Android 11 API 30 x86_64 with KVM acceleration and a fixed-focus virtual-scene camera"
+    "environment": "Android 11 API 30 x86_64 with KVM acceleration and a fixed-focus virtual-scene camera",
+    "tests_passed": 10,
+    "workflow_run_url": "https://github.com/seunghyuk09/PrismTest/actions/runs/45736698242",
+    "workflow_run_id": 45736698242,
+    "validated_source_commit": "a4c6408",
+    "installed_apk_sha256": "f7de780c3e641b968b7d0145261c30a783d07542a1404db2855c57a394d5879e",
+    "candidate_name": "PrismScope-v26-ranked-markers-candidate1.apk",
+    "validated_date": "2026-11-26 Asia/Seoul",
+    "promotion": "Official download copies identical tested bytes without rebuilding.",
+    "artifact_name": "published-apk-validation",
+    "autofocus_success_exercised": false,
+    "artifact_sha256": "38a2b8095dc9ab6a7e5101b6fa31c3e7f9f0cbe30d79fde64bc654fab37ea4e7"
   },
   "physical_camera_tested": false
 }

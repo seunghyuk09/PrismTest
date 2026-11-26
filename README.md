@@ -2,22 +2,27 @@
 
 ## 📱 안드로이드 앱 다운로드
 
-**[APK v25 다운로드 — 초점 고정 시 흐려짐 수정](https://github.com/seunghyuk09/PrismTest/raw/refs/heads/claude/transparent-prism-surface-inspection-1s9537/downloads/PrismScope-v25-focus-lock.apk)** · 약 23 MB
+**[APK v26 다운로드 — 최종 후보 1–10번 색상 구분](https://github.com/seunghyuk09/PrismTest/raw/refs/heads/claude/transparent-prism-surface-inspection-1s9537/downloads/PrismScope-v26-ranked-markers.apk)** · 약 23 MB
 
-폰에서 위 링크를 눌러 설치한다. 자동 상태에서 프리즘이 선명하게 보이면 **현재 초점 고정**을 누른다. **초점 잠금 확인됨 / 촬영 조건 고정됨**이 보이면 같은 거리에서 프리즘을 돌려 검사한다. 새로 검색하려면 프리즘 모서리를 검사 영역 중앙에 놓고 **초점 다시 맞춤**을 누른다.
+폰에서 위 링크를 눌러 설치한다. 새 검사 결과 화면과 자동 저장되는 표시 사진에 다음 규칙을 적용한다.
 
-자동초점 거리 값을 수동으로 다시 보내거나 값이 없을 때 4 D로 대체하던 동작을 없앴다. 기본 고정은 이미 맞은 연속 자동초점을 유지하고, 새 검색은 별도 버튼으로 요청한다. 실제 잠금을 확인하며, 검색·실패·렌즈 이동 중에는 검사 시작을 허용하지 않는다. 고정 전후 영상 처리 요청을 같게 유지하며, 화질·화면 크기·배율을 바꾸면 다시 고정한다.
+- **1–3번: 빨강**
+- **4–6번: 주황**
+- **7–10번: 노랑**
+- **11번 이후: 표시하지 않음**
 
-**컬러 PNG 저장, HD / FHD / QHD / 4K 화질 선택**을 유지한다. 실제 수신·저장·프리뷰 크기와 분석 FPS를 화면에서 확인한다. 기기에 따라 지원 해상도는 달라진다. 검사 영역 크기 저장, **카메라 크게**, 결과 사진의 두 손가락 확대, **직전 결과**, 내장 디그 검증기도 사용할 수 있다.
+원과 번호를 같은 색으로 표시한다. 번호는 기존 후보 점수순이며, 최대 10곳을 그린다. 색은 순번을 구분하며 불량 확정을 뜻하지 않는다. 이전에 저장한 사진은 당시 표시·안내를 유지한다.
 
-초점 방식·분석 해상도·영역·추적 조건이 바뀌면 새 조건에서 양품·불량 기준을 등록한다. 기존 사진과 기록은 보존한다.
+검사 점수 계산은 동일하므로 **기존 검사 기준을 다시 등록할 필요가 없다.** v25의 **현재 초점 고정 / 초점 다시 맞춤**, 컬러 PNG 저장과 HD/FHD/QHD/4K 화질 선택을 유지한다.
 
-릴리스 빌드와 단위 테스트 **68개**, Android 실행 테스트 **10개**가 통과했다. [Android 11 가상기기 검증 기록](https://github.com/seunghyuk09/PrismTest/actions/runs/45734556096)에 검증한 APK SHA-256과 결과가 있다. 같은 파일을 재빌드 없이 배포한다. 성공한 실행은 고정초점 가상 카메라를 사용했다. 실제 폰의 자동초점 렌즈 잠금 성공·선명도·4K 지원·처리 속도는 폰에서 확인해야 한다.
-[초점 고정 사용법](docs/focus-lock-v25.md) · [컬러·4K](docs/color-4k-v24.md) · [자동 저장](docs/auto-result-v21.md) · [검증기](docs/validation-v19.md) · [APK 빌드 정보](downloads/PrismScope-v25-build-info.json)
+릴리스 빌드와 기존 단위 테스트 **68개**, Android 실행 시험 **10개**가 통과했다. [실행 기록](https://github.com/seunghyuk09/PrismTest/actions/runs/45736698242)의 APK와 같은 파일을 재빌드 없이 배포한다. Android 실행은 고정초점 가상 카메라의 저장·열기·카메라 제어 흐름 검증이다. 실제 폰의 자동초점·선명도·4K 지원을 검증한 결과는 아니다.
+[후보 표시 규칙](docs/ranked-markers-v26.md) · [초점 고정](docs/focus-lock-v25.md) · [컬러·4K](docs/color-4k-v24.md) · [자동 저장](docs/auto-result-v21.md) · [APK 빌드 정보](downloads/PrismScope-v26-build-info.json)
 
 ---
 
 **스마트폰 카메라로 투명 프리즘을 검사하는 시스템** — 조명·차광 보조 지그 + 안드로이드 앱.
+
+**v26:** 최종 디그 후보 원·번호를 1–3번 빨강, 4–6번 주황, 7–10번 노랑으로 표시한다. 11번부터는 그리지 않는다.
 
 **v25:** 초점 거리 재입력 대신 자동초점 잠금을 유지한다. 실제 잠금·렌즈 정지를 확인하고, 초점 다시 맞춤과 카메라 재연결 후 재고정을 제공한다.
 
@@ -43,7 +48,7 @@
 육안검사에서 하던 동작 그대로이고, 앱은 그동안 본 것을
 **유형별 수치와 판정**으로 남긴다.
 
-- 앱 다운로드: [APK v25](https://github.com/seunghyuk09/PrismTest/raw/refs/heads/claude/transparent-prism-surface-inspection-1s9537/downloads/PrismScope-v25-focus-lock.apk)
+- 앱 다운로드: [APK v26](https://github.com/seunghyuk09/PrismTest/raw/refs/heads/claude/transparent-prism-surface-inspection-1s9537/downloads/PrismScope-v26-ranked-markers.apk)
 - 사용법: [`docs/user-manual.md`](docs/user-manual.md)
 
 ---
